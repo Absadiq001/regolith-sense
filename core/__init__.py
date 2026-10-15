@@ -1,0 +1,3 @@
+"""
+RegolithSense Core Geophysical Package
+"""
