@@ -13,7 +13,7 @@ ENV/
 *.xlsx
 
 # Survey data is licensed and must not be committed
-data/
+data/*
 *.grd
 *.gi
 !data/wamba_210_demo.npz
