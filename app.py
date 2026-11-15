@@ -69,8 +69,11 @@ def axes_km(project, step):
     return x, y
 
 
-def map_figure(project, grid, title, colours="Viridis", symmetric=False, unit="", mask=None, points=None, occurrences=None, discrete=None, height=520):
-    """One interactive map. Every map in the app goes through here so they look and behave the same."""
+def map_figure(project, grid, title, colours="Viridis", symmetric=False, unit="", mask=None, points=None, occurrences=None, discrete=None, height=520, cols=2):
+    """One interactive map. Every map in the app goes through here so they look and behave the same.
+    `cols` is how many maps share the row; the figure height follows the grid's aspect so the map fills the frame."""
+    width_px = {1: 820, 2: 440, 3: 290, 4: 215}.get(cols, 440)
+    height = min(height, int(width_px * project["ny"] / project["nx"]) + 90)
     step = max(int(np.ceil(max(project["nx"], project["ny"]) / 450.0)), 1)
     z = np.asarray(grid, float)[::step, ::step]
     x, y = axes_km(project, step)
@@ -105,7 +108,7 @@ def map_figure(project, grid, title, colours="Viridis", symmetric=False, unit=""
                                  marker=dict(size=10, symbol="circle-open", color="white", line=dict(width=2)),
                                  hovertemplate="%{text}<extra>target</extra>", showlegend=False))
     fig.update_layout(title=dict(text=title, font=dict(size=15)), height=height, margin=dict(l=10, r=10, t=44, b=10),
-                      xaxis=dict(title="Easting (km)", constrain="domain"), yaxis=dict(title="Northing (km)", scaleanchor="x", scaleratio=1),
+                      xaxis=dict(title="Easting (km)", constrain="domain"), yaxis=dict(title="Northing (km)", scaleanchor="x", scaleratio=1, constrain="domain"),
                       plot_bgcolor="white")
     return fig
 
@@ -190,6 +193,7 @@ if step == STEPS[0]:
                     state["project"] = gridio.harmonise(chosen, cell=float(cell))
                 state["source"] = ", ".join(sorted(state["uploads"]))
                 state["simulated"] = False; state["occurrences"] = None
+                st.rerun()
             except Exception as exc:
                 st.error(str(exc))
     with right:
@@ -198,6 +202,7 @@ if step == STEPS[0]:
         if st.button("Load simulated example"):
             state["project"] = gridio.harmonise(pipeline.simulated_layers(), cell=100.0)
             state["source"] = "Simulated example"; state["simulated"] = True; state["occurrences"] = None
+            st.rerun()
         st.subheader("Known occurrences (optional)")
         st.write("A CSV of known pegmatite or mine locations with easting/northing or longitude/latitude columns. "
                  "With ten or more, the prospectivity model can be trained and tested on them.")
@@ -223,7 +228,7 @@ if step == STEPS[0]:
         for i, (kind, grid) in enumerate(P["layers"].items()):
             with cols[i % 3]:
                 c, sym = palette.get(kind, ("Viridis", False))
-                show(map_figure(P, grid - (np.median(grid) if sym else 0), gridio.LAYER_NAMES[kind], c, sym, height=380,
+                show(map_figure(P, grid - (np.median(grid) if sym else 0), gridio.LAYER_NAMES[kind], c, sym, height=380, cols=3,
                                 occurrences=state["occurrences"]))
 
 # -------------------------------------------------------------- 2 magnetics
@@ -318,11 +323,11 @@ elif step == STEPS[2]:
     with tabs[2]:
         a, b, c = st.columns(3)
         with a:
-            show(map_figure(P, P["layers"]["k"], "Potassium", "YlOrRd", False, "%", height=420))
+            show(map_figure(P, P["layers"]["k"], "Potassium", "YlOrRd", False, "%", height=420, cols=3))
         with b:
-            show(map_figure(P, P["layers"]["eth"], "Thorium", "YlGn", False, "ppm", height=420))
+            show(map_figure(P, P["layers"]["eth"], "Thorium", "YlGn", False, "ppm", height=420, cols=3))
         with c:
-            show(map_figure(P, P["layers"]["eu"], "Uranium", "PuBu", False, "ppm", height=420))
+            show(map_figure(P, P["layers"]["eu"], "Uranium", "PuBu", False, "ppm", height=420, cols=3))
 
 # --------------------------------------------------------------- 4 regolith
 elif step == STEPS[3]:
@@ -343,7 +348,7 @@ elif step == STEPS[3]:
             st.dataframe(share, use_container_width=True, hide_index=True)
             st.markdown("Brown: relict lateritic surfaces. Cream: erosional ground with in-situ material. Blue: depositional, transported cover.")
             st.caption("Rule-based and uncalibrated. Check against field observation before relying on it.")
-        show(map_figure(P, P["layers"]["dem"], "Elevation", "Earth", False, "m", height=420))
+        show(map_figure(P, P["layers"]["dem"], "Elevation", "Earth", False, "m", height=420, cols=1))
     st.subheader("Gravity")
     if grav is None:
         st.info("No gravity grid in this dataset. Add a Bouguer gravity grid in step 1 to include low-density granite as evidence.")
@@ -426,7 +431,7 @@ else:
             cols = st.columns(3)
             for i, (name, layer) in enumerate(evidence.items()):
                 with cols[i % 3]:
-                    show(map_figure(P, layer, name, "Viridis", False, "", height=360))
+                    show(map_figure(P, layer, name, "Viridis", False, "", height=360, cols=3))
 
     else:
         st.header("Targets and export")
