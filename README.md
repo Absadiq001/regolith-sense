@@ -31,6 +31,7 @@ It takes data that already exists for the whole country and turns it into a targ
 | 5. Prospectivity | Evidence layers, optional known occurrences | Weighted overlay, or Random Forest / Gradient Boosting / logistic regression with spatial block cross-validation, ROC, importances, uncertainty |
 | 6. Targets and export | Score | Ranked, spaced targets with regime and depth; CSV, GeoJSON, KML, Excel, XYZ, Word report; per-target evidence table |
 | 7. 3D view | SRTM + any layer | Terrain draped with the score, target pins to estimated source depth |
+| Figure pack | Everything above | One ZIP of every map and chart as PNG, the 3D view as images from two angles plus an interactive HTML file, and the targets as CSV, KML and GeoJSON (buttons on the Targets, 3D view and Decision brief pages) |
 | 8. Decision brief | Everything above | One page for the person deciding where to send the team, with field instructions and an illustrative cost framing |
 
 Processing always runs on the whole sheet and the study area is cut out of the results, so filter edges never contaminate a small block, and a block's scores can be compared with the rest of the sheet (the app reports where your area ranks).

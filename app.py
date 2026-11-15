@@ -222,6 +222,34 @@ def explain_targets(targets, evidence, project):
     return out
 
 
+def figure_3d(P, col, cmap, drape, exag, targets, show_targets=True, height=680):
+    """Terrain coloured by a layer, with target pins that reach down to the estimated depth of the magnetic source."""
+    stepn = max(int(np.ceil(max(P["nx"], P["ny"]) / 220.0)), 1)
+    x, y = axes_km(P, stepn)
+    dem = P["layers"]["dem"] if "dem" in P["layers"] else np.zeros((P["ny"], P["nx"]))
+    zs = dem[::stepn, ::stepn]
+    colz = np.asarray(col, float)[::stepn, ::stepn]
+    lo, hi = np.nanpercentile(colz, (2, 98))
+    fig = go.Figure(go.Surface(x=x, y=y, z=zs, surfacecolor=colz, colorscale=cmap, cmin=lo, cmax=hi, colorbar=dict(title=drape, thickness=14),
+                               hovertemplate="E %{x:.1f} km<br>N %{y:.1f} km<br>elev %{z:.0f} m<extra></extra>"))
+    if show_targets and targets is not None and len(targets):
+        for _, t in targets.iterrows():
+            ex, ny_ = t["Easting (m)"] / 1000.0, t["Northing (m)"] / 1000.0
+            r = min(int((t["Northing (m)"] - P["y0"]) / P["dx"]), P["ny"] - 1); c_ = min(int((t["Easting (m)"] - P["x0"]) / P["dx"]), P["nx"] - 1)
+            top = float(dem[r, c_]); d = t.get("Depth to magnetic source (m)")
+            bottom = top - (float(d) if d is not None and not pd.isna(d) else 150.0)
+            fig.add_trace(go.Scatter3d(x=[ex, ex], y=[ny_, ny_], z=[top + 20, bottom], mode="lines+markers+text", text=[t["Target"], ""],
+                                       textposition="top center", line=dict(color="#d62728" if t["Priority"] == "High" else "#f4a261", width=5),
+                                       marker=dict(size=[4, 2], color="#d62728" if t["Priority"] == "High" else "#f4a261"), showlegend=False,
+                                       hovertemplate="%s<br>score %.2f<br>%s<extra></extra>" % (t["Target"], t["Score"], t.get("Regolith regime", ""))))
+    zr = float(np.nanmax(zs) - np.nanmin(zs)) or 1.0
+    xr = (x[-1] - x[0]) * 1000.0; yr = (y[-1] - y[0]) * 1000.0
+    fig.update_layout(height=height, margin=dict(l=0, r=0, t=10, b=0),
+                      scene=dict(xaxis_title="Easting (km)", yaxis_title="Northing (km)", zaxis_title="Elevation (m)",
+                                 aspectmode="manual", aspectratio=dict(x=1, y=yr / xr, z=exag * zr / xr), camera=dict(eye=dict(x=1.3, y=-1.4, z=0.9))))
+    return fig
+
+
 def aoi_panel(F):
     """Cut a study area out of the loaded sheet by centre and size, corner coordinates, or by drawing on the map."""
     lon, lat = gridio.utm_to_lonlat(np.array([F["x0"], F["x0"] + F["nx"] * F["dx"]]), np.array([F["y0"], F["y0"] + F["ny"] * F["dx"]]), F["zone"])
@@ -709,6 +737,44 @@ else:
         top = 100.0 * float(np.mean(here >= np.quantile(full_score, 0.95)))
         st.info("**Against the whole sheet:** this area's average score is higher than %.0f%% of the sheet, and %.0f%% of it lies in the sheet's best 5%%." % (pct, top))
 
+    def drape_options(score):
+        drapes = {"Prospectivity score": (score, "Viridis"), "Magnetic field": (mag["field"] if mag else None, "RdBu_r")}
+        if rad is not None:
+            drapes["Potassium enrichment (Kd)"] = (rad["kd"], "RdYlBu_r")
+        if reg is not None:
+            drapes["Regolith regime"] = (reg["regime"].astype(float), [[0, REGIME_COLOURS[0]], [0.5, REGIME_COLOURS[1]], [1, REGIME_COLOURS[2]]])
+        if grav is not None:
+            drapes["Bouguer gravity"] = (P["layers"]["grav"], "Spectral_r")
+        return {k: v for k, v in drapes.items() if v[0] is not None}
+
+    def pack_ui(score, targets, key):
+        """One button that gathers every map, chart and 3D view into a ZIP."""
+        exag = float(state.get("exag3d", 4.0))
+        sig = repr((state["aoi"], state.get("score_label"), round(float(np.nansum(score)), 3), len(targets), state.get("keep_pct"), state.get("spacing_m"),
+                    state.get("threshold_basis"), state.get("drape3d"), exag, state.get("mode")))
+        st.caption("Every map and chart in the app as PNG images, the ranked targets (CSV, KML, GeoJSON), the 3D view as images from two angles, "
+                   "and an interactive 3D file that opens in any browser. Ready for a report, slides or the field team.")
+        if st.button("Build figure pack (ZIP)", key="pack_" + key, use_container_width=True, type="primary"):
+            with st.spinner("Drawing every map, chart and 3D view. This takes about half a minute."):
+                drapes = drape_options(score)
+                name = state.get("drape3d") if state.get("drape3d") in drapes else next(iter(drapes))
+                col, cmap = drapes[name]
+                try:
+                    html = figure_3d(P, col, cmap, name, exag, targets).to_html(include_plotlyjs=True, full_html=True)
+                except Exception:
+                    html = None
+                used = {k: all_evidence[k] for k in state.get("evidence_used", list(all_evidence)) if k in all_evidence}
+                data = report.figure_pack(P, state["source"], mag, rad, reg, grav, score, state["score_label"], targets, used, sview(state.get("uncertainty")),
+                                          state.get("model_info"), ["Simulated example data: the results do not describe real ground."] if state["simulated"] else [],
+                                          html, name, exag * 1.5)
+                state["figpack"] = (sig, data)
+        fp = state.get("figpack")
+        if fp and fp[0] == sig:
+            st.download_button("Download figure pack (ZIP, %.0f MB)" % (len(fp[1]) / 1e6), fp[1], "regolithsense_figures.zip", "application/zip",
+                               key="packdl_" + key, use_container_width=True)
+        elif fp:
+            st.caption("Settings or the study area changed since the pack was built. Build it again to include the changes.")
+
     # ................................................................ 5
     if step == PROS:
         st.header("Prospectivity")
@@ -832,58 +898,33 @@ else:
         r2 = st.columns(4)
         r2[0].download_button("Score grid (XYZ)", report.grid_xyz(P, score, "score"), "regolithsense_score.csv", "text/csv", use_container_width=True)
         r2[1].download_button("All grids (XYZ)", report.all_layers_xyz(P, {"score": score}), "regolithsense_grids.csv", "text/csv", use_container_width=True)
-        if r2[2].button("Build Word report", use_container_width=True, type="primary"):
+        if r2[2].button("Build Word report", use_container_width=True):
             with st.spinner("Drawing maps and writing the report"):
                 state["docx"] = report.word_report(P, state["source"], mag, rad, reg, score, state["score_label"], targets, state.get("model_info"), notes)
         if state.get("docx"):
             r2[3].download_button("Download Word report", state["docx"], "regolithsense_report.docx",
                                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+        st.subheader("Figure pack")
+        pack_ui(score, targets, "targets")
 
     # ................................................................ 7
     elif step == VIEW3D:
         st.header("3D view")
         kpi_band(P, mag, rad, reg); source_note()
         score, threshold, targets = current_targets()
-        drapes = {"Prospectivity score": (score, "Viridis"), "Magnetic field": (mag["field"] if mag else None, "RdBu_r")}
-        if rad is not None:
-            drapes["Potassium enrichment (Kd)"] = (rad["kd"], "RdYlBu_r")
-        if reg is not None:
-            drapes["Regolith regime"] = (reg["regime"].astype(float), [[0, REGIME_COLOURS[0]], [0.5, REGIME_COLOURS[1]], [1, REGIME_COLOURS[2]]])
-        if grav is not None:
-            drapes["Bouguer gravity"] = (P["layers"]["grav"], "Spectral_r")
-        drapes = {k: v for k, v in drapes.items() if v[0] is not None}
+        drapes = drape_options(score)
         a, b, c = st.columns(3)
         drape = a.selectbox("Surface colour", list(drapes))
         exag = b.slider("Vertical exaggeration", 1.0, 10.0, 4.0, 0.5)
         show_targets = c.checkbox("Show targets with estimated depth", value=True)
-        stepn = max(int(np.ceil(max(P["nx"], P["ny"]) / 220.0)), 1)
-        x, y = axes_km(P, stepn)
-        dem = P["layers"]["dem"] if "dem" in P["layers"] else np.zeros((P["ny"], P["nx"]))
-        zs = dem[::stepn, ::stepn]
+        state["drape3d"] = drape; state["exag3d"] = exag
         col, cmap = drapes[drape]
-        colz = np.asarray(col, float)[::stepn, ::stepn]
-        lo, hi = np.nanpercentile(colz, (2, 98))
-        fig = go.Figure(go.Surface(x=x, y=y, z=zs, surfacecolor=colz, colorscale=cmap, cmin=lo, cmax=hi, colorbar=dict(title=drape, thickness=14),
-                                   hovertemplate="E %{x:.1f} km<br>N %{y:.1f} km<br>elev %{z:.0f} m<extra></extra>"))
-        if show_targets and len(targets):
-            for _, t in targets.iterrows():
-                ex, ny_ = t["Easting (m)"] / 1000.0, t["Northing (m)"] / 1000.0
-                r = min(int((t["Northing (m)"] - P["y0"]) / P["dx"]), P["ny"] - 1); c_ = min(int((t["Easting (m)"] - P["x0"]) / P["dx"]), P["nx"] - 1)
-                top = float(dem[r, c_]); d = t.get("Depth to magnetic source (m)")
-                bottom = top - (float(d) if d is not None and not pd.isna(d) else 150.0)
-                fig.add_trace(go.Scatter3d(x=[ex, ex], y=[ny_, ny_], z=[top + 20, bottom], mode="lines+markers+text", text=[t["Target"], ""],
-                                           textposition="top center", line=dict(color="#d62728" if t["Priority"] == "High" else "#f4a261", width=5),
-                                           marker=dict(size=[4, 2], color="#d62728" if t["Priority"] == "High" else "#f4a261"), showlegend=False,
-                                           hovertemplate="%s<br>score %.2f<br>%s<extra></extra>" % (t["Target"], t["Score"], t.get("Regolith regime", ""))))
-        zr = float(np.nanmax(zs) - np.nanmin(zs)) or 1.0
-        xr = (x[-1] - x[0]) * 1000.0; yr = (y[-1] - y[0]) * 1000.0
-        fig.update_layout(height=680, margin=dict(l=0, r=0, t=10, b=0),
-                          scene=dict(xaxis_title="Easting (km)", yaxis_title="Northing (km)", zaxis_title="Elevation (m)",
-                                     aspectmode="manual", aspectratio=dict(x=1, y=yr / xr, z=exag * zr / xr), camera=dict(eye=dict(x=1.3, y=-1.4, z=0.9))))
-        show(fig)
+        show(figure_3d(P, col, cmap, drape, exag, targets, show_targets))
         st.caption("Terrain from the elevation grid, coloured by the chosen layer. Target pins reach down to the tilt-depth estimate of the nearest magnetic "
                    "source, a rough guide to how deep the cover is at each target, not a measured thickness." if "dem" in P["layers"] else
                    "No elevation grid in this dataset, so the surface is flat. Add SRTM in step 1 for terrain.")
+        st.subheader("Take it with you")
+        pack_ui(score, targets, "3d")
 
     # ................................................................ 8
     else:
@@ -950,6 +991,7 @@ else:
         if state.get("docx"):
             st.download_button("Download Word report", state["docx"], "regolithsense_report.docx",
                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="brief_docx_dl")
+        pack_ui(score, targets, "brief")
 
 if step not in (STEPS[0], METHODS):
     nav_buttons(step)

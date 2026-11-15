@@ -104,3 +104,17 @@ def test_scores_are_the_same_inside_a_study_area_as_on_the_sheet():
     T = pr.pick_targets(sub, view, float(np.quantile(sub, 0.9)), 1500.0, reference=score)
     # target coordinates come out in the sheet's own UTM frame, inside the area
     assert (T["Easting (m)"] >= view["x0"]).all() and (T["Easting (m)"] <= view["x0"] + view["nx"] * view["dx"]).all()
+
+
+def test_figure_pack_contains_every_section_and_skips_nothing():
+    import io, zipfile
+    P = gridio.harmonise(pipeline.simulated_layers(), cell=200.0)
+    mag, rad, reg, grav = pipeline.run_magnetics(P), pipeline.run_radiometrics(P), pipeline.run_regolith(P), pipeline.run_gravity(P)
+    ev = pipeline.evidence_layers(mag, rad, reg, grav); score = pr.knowledge_score(ev)
+    T = pr.pick_targets(score, P, float(np.quantile(score, 0.95)), 1500.0, regime=reg["regime"], depth=mag["depth"])
+    data = report.figure_pack(P, "test", mag, rad, reg, grav, score, "Score", T, ev, None, None, [], "<html></html>")
+    z = zipfile.ZipFile(io.BytesIO(data)); names = z.namelist()
+    for folder in ("01_prepared_layers", "02_magnetics", "03_radiometrics", "04_regolith_gravity", "05_prospectivity", "06_targets", "07_3d_view"):
+        assert any(n.startswith(folder) for n in names), folder
+    assert "README.txt" in names and "Skipped" not in z.read("README.txt").decode()
+    assert any(n.endswith("bouguer_gravity.png") for n in names)  # gravity is included when present

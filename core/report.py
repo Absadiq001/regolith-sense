@@ -166,3 +166,170 @@ def all_layers_xyz(project, extra=None):
     for k, g in cols.items():
         df[k] = np.asarray(g, float)[::step, ::step].ravel()
     buf = io.StringIO(); df.to_csv(buf, index=False, float_format="%.4f"); return buf.getvalue().encode()
+
+
+# --------------------------------------------------------------------- figure pack
+def _png(fig, dpi=150):
+    buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight"); plt.close(fig); return buf.getvalue()
+
+
+def _bar_png(names, values, title, xlabel=""):
+    order = np.argsort(values)
+    fig, ax = plt.subplots(figsize=(7, 0.55 * len(names) + 1.4))
+    ax.barh(np.array(names)[order], np.array(values)[order], color="#2f5d50")
+    ax.set_title(title, fontsize=11); ax.set_xlabel(xlabel)
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+    return _png(fig)
+
+
+def _hist_png(values, title, xlabel, bins=40):
+    v = np.asarray(values, float); v = v[np.isfinite(v)]
+    fig, ax = plt.subplots(figsize=(6.4, 3.6)); ax.hist(v, bins=bins, color="#2f5d50")
+    ax.set_title(title, fontsize=11); ax.set_xlabel(xlabel); ax.set_ylabel("Cells")
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+    return _png(fig)
+
+
+def _rose_png(table):
+    counts, edges = np.histogram(table[:, 1], bins=np.arange(0, 181, 15), weights=table[:, 0] / 1000.0)
+    fig, ax = plt.subplots(figsize=(6.4, 3.6))
+    ax.bar(["%d-%d" % (edges[i], edges[i + 1]) for i in range(len(counts))], counts, color="#2f5d50")
+    ax.set_title("Lineament length by strike (%d lineaments, %.0f km)" % (len(table), table[:, 0].sum() / 1000.0), fontsize=11)
+    ax.set_xlabel("Strike (degrees from north)"); ax.set_ylabel("Total length (km)"); plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+    return _png(fig)
+
+
+def _roc_png(info):
+    fig, ax = plt.subplots(figsize=(5, 5)); ax.plot(info["fpr"], info["tpr"], color="#2f5d50", lw=2.5, label="Model (AUC %.2f)" % info["auc"])
+    ax.plot([0, 1], [0, 1], "--", color="#999999", label="Chance"); ax.set_xlabel("False positive rate"); ax.set_ylabel("True positive rate")
+    ax.set_title("ROC curve (spatial cross-validation)", fontsize=11); ax.legend(loc="lower right")
+    return _png(fig)
+
+
+def _crossplot_png(k, th, kd, alt):
+    rng = np.random.default_rng(0); k = k.ravel(); th = th.ravel(); kd = kd.ravel(); alt = alt.ravel()
+    pick = rng.choice(k.size, size=min(15000, k.size), replace=False)
+    fig, ax = plt.subplots(figsize=(6.4, 5)); sc = ax.scatter(th[pick], k[pick], c=kd[pick], s=3, cmap="RdYlBu_r", vmin=-2, vmax=2)
+    sel = pick[alt[pick]]; ax.scatter(th[sel], k[sel], s=5, c="black", label="flagged alteration")
+    xs = np.linspace(np.nanpercentile(th, 1), np.nanpercentile(th, 99), 50); ax.plot(xs, np.nanmean(k) / max(np.nanmean(th), 1e-9) * xs, "--", color="#2f5d50", label="regional K:eTh trend")
+    fig.colorbar(sc, ax=ax, label="Kd"); ax.set_xlabel("eTh (ppm)"); ax.set_ylabel("K (%)"); ax.set_title("Potassium against thorium", fontsize=11); ax.legend(loc="upper left", fontsize=8)
+    return _png(fig)
+
+
+def surface_png(project, dem, drape, cmap, title, label, targets=None, exag=4.0, azim=-60, elev=32, symmetric=False):
+    """Terrain with a layer draped over it, as a static image (matplotlib 3D)."""
+    from matplotlib import cm
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    step = max(int(np.ceil(max(project["nx"], project["ny"]) / 140.0)), 1)
+    z = np.asarray(dem, float)[::step, ::step]; c = np.asarray(drape, float)[::step, ::step]
+    x = (project["x0"] + np.arange(0, project["nx"], step) * project["dx"]) / 1000.0
+    y = (project["y0"] + np.arange(0, project["ny"], step) * project["dx"]) / 1000.0
+    X, Y = np.meshgrid(x, y)
+    lo, hi = np.nanpercentile(c, (2, 98))
+    if symmetric:
+        m = max(abs(lo), abs(hi)); lo, hi = -m, m
+    norm = matplotlib.colors.Normalize(lo, hi); cmap_obj = plt.get_cmap(cmap)
+    fig = plt.figure(figsize=(9, 7)); ax = fig.add_subplot(111, projection="3d")
+    ax.plot_surface(X, Y, z, facecolors=cmap_obj(norm(np.nan_to_num(c, nan=lo))), rstride=1, cstride=1, linewidth=0, antialiased=False, shade=False)
+    if targets is not None and len(targets):
+        for _, t in targets.iterrows():
+            r = int(np.clip((t["Northing (m)"] - project["y0"]) / project["dx"] / step, 0, z.shape[0] - 1)); cc = int(np.clip((t["Easting (m)"] - project["x0"]) / project["dx"] / step, 0, z.shape[1] - 1))
+            top = float(z[r, cc]); d = t.get("Depth to magnetic source (m)")
+            bottom = top - (float(d) if d is not None and not pd.isna(d) else 150.0)
+            col = "#d62728" if t["Priority"] == "High" else "#f4a261"
+            ax.plot([t["Easting (m)"] / 1000] * 2, [t["Northing (m)"] / 1000] * 2, [top + 20, bottom], color=col, lw=2.2)
+            if t["Target"] in set(targets["Target"].head(10)):
+                ax.text(t["Easting (m)"] / 1000, t["Northing (m)"] / 1000, top + 60, t["Target"], fontsize=7, color="black", ha="center", fontweight="bold")
+    xr = (x[-1] - x[0]) or 1.0; yr = (y[-1] - y[0]) or 1.0; zr = float(np.nanmax(z) - np.nanmin(z)) / 1000.0 or 0.1
+    ax.set_box_aspect((1, yr / xr, max(exag * 2.0 * zr / xr, 0.12)))
+    from matplotlib.ticker import MaxNLocator
+    ax.zaxis.set_major_locator(MaxNLocator(3))
+    ax.view_init(elev=elev, azim=azim)
+    ax.set_xlabel("Easting (km)"); ax.set_ylabel("Northing (km)"); ax.set_zlabel("Elevation (m)"); ax.set_title(title, fontsize=12)
+    fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap_obj), ax=ax, shrink=0.55, pad=0.08, label=label)
+    return _png(fig, dpi=160)
+
+
+def figure_pack(project, source, mag, rad, reg, grav, score, score_label, targets, evidence=None, uncertainty=None, model_info=None,
+                notes=None, interactive_3d_html=None, drape3d=None, exag=4.0):
+    """Every map, chart and 3D view as images in one ZIP, with the targets and a README listing what is inside."""
+    import zipfile
+    L = project["layers"]; made, skipped = [], []
+    zf_buf = io.BytesIO(); zf = zipfile.ZipFile(zf_buf, "w", zipfile.ZIP_DEFLATED)
+
+    def add(path, producer):
+        try:
+            data = producer()
+            if data:
+                zf.writestr(path, data); made.append(path)
+        except Exception as exc:  # one failed figure must not stop the pack
+            skipped.append("%s (%s)" % (path, str(exc)[:80]))
+
+    pal = {"tmi": ("RdBu_r", True, "nT"), "k": ("YlOrRd", False, "%"), "eth": ("YlGn", False, "ppm"), "eu": ("PuBu", False, "ppm"), "tc": ("viridis", False, ""),
+           "dem": ("terrain", False, "m"), "grav": ("Spectral_r", True, "mGal")}
+    names = {"tmi": "Total magnetic intensity", "k": "Potassium", "eth": "Thorium", "eu": "Uranium", "tc": "Total count", "dem": "Elevation", "grav": "Bouguer gravity"}
+    for kind, grid in L.items():
+        c, sym, unit = pal.get(kind, ("viridis", False, ""))
+        add("01_prepared_layers/%s.png" % kind, lambda grid=grid, c=c, sym=sym, unit=unit, kind=kind: map_png(project, grid - (np.median(grid) if sym else 0), names.get(kind, kind), c, sym, unit))
+    if mag is not None:
+        add("02_magnetics/field_reduced_to_equator.png", lambda: map_png(project, mag["field"] - np.median(mag["field"]), "Magnetic field (reduced to the equator)", "RdBu_r", True, "nT"))
+        add("02_magnetics/residual_field.png", lambda: map_png(project, mag["residual"], "Residual field (regional removed)", "RdBu_r", True, "nT"))
+        add("02_magnetics/tilt_angle_with_lineaments.png", lambda: map_png(project, mag["tilt"], "Tilt angle with traced lineaments", "PuOr_r", True, "deg", mask=mag["lineaments"]))
+        add("02_magnetics/analytic_signal.png", lambda: map_png(project, mag["asig"], "Analytic signal", "magma", False, "nT/m"))
+        add("02_magnetics/total_horizontal_derivative.png", lambda: map_png(project, mag["hg"], "Total horizontal derivative", "magma", False, "nT/m"))
+        add("02_magnetics/first_vertical_derivative.png", lambda: map_png(project, mag["vd"], "First vertical derivative", "RdBu_r", True, "nT/m"))
+        add("02_magnetics/tilt_depth.png", lambda: map_png(project, mag["depth"], "Tilt-depth to magnetic sources", "viridis_r", False, "m"))
+        if len(mag["lineament_table"]):
+            add("02_magnetics/lineament_strike_chart.png", lambda: _rose_png(mag["lineament_table"]))
+        add("02_magnetics/depth_histogram.png", lambda: _hist_png(mag["depth"], "Distribution of depth estimates", "Depth (m)"))
+    if rad is not None:
+        add("03_radiometrics/ternary_K_Th_U.png", lambda: map_png(project, rad["ternary"], "Ternary image (K red, eTh green, eU blue)", rgb=True))
+        add("03_radiometrics/potassium_enrichment_Kd.png", lambda: map_png(project, rad["kd"], "Potassium enrichment (Kd) with flagged alteration", "RdYlBu_r", True, "", mask=rad["alteration"]))
+        add("03_radiometrics/F_parameter.png", lambda: map_png(project, rad["f_param"], "F-parameter (K x eU / eTh)", "YlOrRd"))
+        add("03_radiometrics/K_over_eTh.png", lambda: map_png(project, rad["k_eth"], "K / eTh", "YlOrRd"))
+        add("03_radiometrics/eU_over_eTh.png", lambda: map_png(project, rad["eu_eth"], "eU / eTh", "PuBu"))
+        add("03_radiometrics/K_vs_eTh_crossplot.png", lambda: _crossplot_png(L["k"], L["eth"], rad["kd"], rad["alteration"]))
+    if reg is not None:
+        add("04_regolith_gravity/regolith_regime.png", lambda: map_png(project, reg["regime"], "Regolith regime (brown relict, cream erosional, blue depositional)", classes=True))
+        add("04_regolith_gravity/slope.png", lambda: map_png(project, reg["slope"], "Slope", "Greys", False, "deg"))
+    if grav is not None:
+        add("04_regolith_gravity/bouguer_gravity.png", lambda: map_png(project, L["grav"] - np.median(L["grav"]), "Bouguer gravity", "Spectral_r", True, "mGal"))
+        add("04_regolith_gravity/residual_gravity.png", lambda: map_png(project, grav["residual"], "Residual gravity", "Spectral_r", True, "mGal"))
+        add("04_regolith_gravity/vertical_gravity_gradient.png", lambda: map_png(project, grav["vd"] * 1e4, "Vertical gravity gradient (Gzz)", "PuOr_r", True, "Eotvos"))
+    add("05_prospectivity/prospectivity_score.png", lambda: map_png(project, score, score_label, "viridis", False, "score"))
+    add("05_prospectivity/score_distribution.png", lambda: _hist_png(score, "Score distribution", "Score", 50))
+    for name, layer in (evidence or {}).items():
+        add("05_prospectivity/evidence/%s.png" % "".join(ch if ch.isalnum() else "_" for ch in name).strip("_"), lambda layer=layer, name=name: map_png(project, layer, name, "viridis"))
+    if uncertainty is not None:
+        add("05_prospectivity/model_uncertainty.png", lambda: map_png(project, uncertainty, "Model uncertainty (spread between trees)", "Greys"))
+    if model_info and model_info.get("importance"):
+        add("05_prospectivity/evidence_importance.png", lambda: _bar_png(list(model_info["importance"]), list(model_info["importance"].values()), "What the model relied on"))
+    if model_info and model_info.get("fpr"):
+        add("05_prospectivity/roc_curve.png", lambda: _roc_png(model_info))
+    add("06_targets/score_with_ranked_targets.png", lambda: map_png(project, score, score_label + " with ranked targets", "viridis", False, "score", points=targets))
+    if targets is not None and len(targets):
+        zf.writestr("06_targets/targets.csv", targets.to_csv(index=False)); made.append("06_targets/targets.csv")
+        zf.writestr("06_targets/targets.kml", targets_kml(targets)); made.append("06_targets/targets.kml")
+        zf.writestr("06_targets/targets.geojson", targets_geojson(targets)); made.append("06_targets/targets.geojson")
+    dem = L.get("dem") if "dem" in L else np.zeros((project["ny"], project["nx"]))
+    for i, (az, el) in enumerate(((-60, 32), (35, 28)), 1):
+        add("07_3d_view/terrain_score_view_%d.png" % i, lambda az=az, el=el: surface_png(project, dem, score, "viridis", "Terrain coloured by prospectivity, with targets", "score", targets, exag, az, el))
+    if mag is not None:
+        add("07_3d_view/terrain_magnetic_view.png", lambda: surface_png(project, dem, mag["field"], "RdBu_r", "Terrain coloured by magnetic field", "nT", targets, exag, -60, 32, True))
+    if interactive_3d_html:
+        zf.writestr("07_3d_view/interactive_3d_view.html", interactive_3d_html); made.append("07_3d_view/interactive_3d_view.html")
+    readme = ["RegolithSense figure pack", "Generated %s" % date.today().isoformat(), "Dataset: %s" % source,
+              "Study area: %d x %d cells of %.0f m (%.0f km2)" % (project["nx"], project["ny"], project["dx"], project["nx"] * project["ny"] * project["dx"] ** 2 / 1e6),
+              "Coordinates: WGS84 UTM zone %dN (kilometres on the axes)" % project["zone"], ""]
+    readme += list(notes or [])
+    readme += ["", "Scores are rankings of ground for follow-up, not probabilities of a deposit. Not a JORC or NI 43-101 report.", "",
+               "Folders: 01 prepared layers, 02 magnetics, 03 radiometrics, 04 regolith and gravity, 05 prospectivity, 06 targets (CSV, KML, GeoJSON),",
+               "07 3D view (static images and an interactive HTML file that opens in any browser).", "", "%d files." % len(made)]
+    if skipped:
+        readme += ["", "Skipped:"] + ["  " + s for s in skipped]
+    zf.writestr("README.txt", "\n".join(readme)); zf.close()
+    return zf_buf.getvalue()
