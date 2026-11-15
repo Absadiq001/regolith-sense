@@ -132,8 +132,9 @@ def train_forest(evidence, occurrences, cell, buffer_m=300.0, n_trees=200, block
     return prob, unc, info
 
 
-def pick_targets(score, project, threshold=0.7, spacing_m=1500.0, regime=None, depth=None, uncertainty=None, max_targets=40):
-    """Local maxima of the score above `threshold`, at least `spacing_m` apart, ranked best first."""
+def pick_targets(score, project, threshold=0.7, spacing_m=1500.0, regime=None, depth=None, uncertainty=None, max_targets=40, reference=None):
+    """Local maxima of the score above `threshold`, at least `spacing_m` apart, ranked best first.
+    Priority labels are set against `reference` (the whole-sheet score when given), so 'High' means high for the region."""
     cell = project["dx"]
     size = max(int(spacing_m / cell) | 1, 3)
     peaks = (ndimage.maximum_filter(score, size=size) == score) & (score >= threshold)
@@ -158,7 +159,8 @@ def pick_targets(score, project, threshold=0.7, spacing_m=1500.0, regime=None, d
             vals.append(int(round(float(np.nanmedian(win)))) if np.isfinite(win).any() else None)
         df["Depth to magnetic source (m)"] = vals
     q = score[rr, cc]
-    df["Priority"] = np.where(q >= np.quantile(score, 0.995), "High", np.where(q >= np.quantile(score, 0.98), "Medium", "Low"))
+    ref = score if reference is None else reference
+    df["Priority"] = np.where(q >= np.quantile(ref, 0.995), "High", np.where(q >= np.quantile(ref, 0.98), "Medium", "Low"))
     return df
 
 

@@ -88,3 +88,55 @@ def evidence_layers(mag, rad, reg, grav):
         gravity_residual=grav["residual"] if grav else None,
         in_situ=reg["weight"] if reg else None,
     )
+
+
+# ------------------------------------------------------------------ study-area subsetting
+def view_project(full, window=None):
+    """
+    A project restricted to a study area. `window` is (r0, r1, c0, c1) in cells of `full`, or None for the whole
+    sheet. The view keeps its offset (r0, c0) and the full shape so processed grids can be cut to match.
+    """
+    r0, r1, c0, c1 = window if window else (0, full["ny"], 0, full["nx"])
+    v = dict(full)
+    v["layers"] = {k: np.ascontiguousarray(a[r0:r1, c0:c1]) for k, a in full["layers"].items()}
+    v.update(x0=full["x0"] + c0 * full["dx"], y0=full["y0"] + r0 * full["dx"], nx=c1 - c0, ny=r1 - r0,
+             r0=r0, c0=c0, full_ny=full["ny"], full_nx=full["nx"])
+    return v
+
+
+def crop_results(obj, view):
+    """Cut every full-sheet grid in a processed-results dict (or a bare array) down to the study area."""
+    if obj is None or view.get("full_ny") is None:
+        return obj
+    r0, c0, ny, nx = view["r0"], view["c0"], view["ny"], view["nx"]
+    if isinstance(obj, np.ndarray):
+        if obj.ndim >= 2 and obj.shape[:2] == (view["full_ny"], view["full_nx"]):
+            return obj[r0:r0 + ny, c0:c0 + nx]
+        return obj
+    if isinstance(obj, dict):
+        out = {k: crop_results(v, view) for k, v in obj.items()}
+        t = obj.get("lineament_table")
+        if isinstance(t, np.ndarray) and t.ndim == 2 and t.shape[1] >= 4:
+            keep = (t[:, 2] >= r0) & (t[:, 2] < r0 + ny) & (t[:, 3] >= c0) & (t[:, 3] < c0 + nx)
+            out["lineament_table"] = t[keep]
+        return out
+    return obj
+
+
+def window_from_lonlat(full, lon_min, lon_max, lat_min, lat_max, min_cells=20):
+    """Cell window covering a lon/lat box, clipped to the sheet. Returns (window, message or None)."""
+    from . import gridio
+    lons = np.array([lon_min, lon_max, lon_min, lon_max]); lats = np.array([lat_min, lat_min, lat_max, lat_max])
+    e, n = gridio.lonlat_to_utm(lons, lats, full["zone"])
+    return window_from_utm(full, e.min(), e.max(), n.min(), n.max(), min_cells)
+
+
+def window_from_utm(full, e_min, e_max, n_min, n_max, min_cells=20):
+    c0 = int(np.floor((e_min - full["x0"]) / full["dx"])); c1 = int(np.ceil((e_max - full["x0"]) / full["dx"]))
+    r0 = int(np.floor((n_min - full["y0"]) / full["dx"])); r1 = int(np.ceil((n_max - full["y0"]) / full["dx"]))
+    c0, c1 = max(c0, 0), min(c1, full["nx"]); r0, r1 = max(r0, 0), min(r1, full["ny"])
+    if c1 - c0 < 1 or r1 - r0 < 1:
+        return None, "That area lies outside the loaded survey."
+    if c1 - c0 < min_cells or r1 - r0 < min_cells:
+        return None, "That area is only %d x %d cells at %.0f m. Choose a larger area, or load the grids at a finer cell size." % (c1 - c0, r1 - r0, full["dx"])
+    return (r0, r1, c0, c1), None

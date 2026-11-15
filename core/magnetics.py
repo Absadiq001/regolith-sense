@@ -123,8 +123,8 @@ def contacts(tilt_deg, strength, percentile=60.0):
 def lineaments(tilt_deg, strength, cell, min_length=1500.0, percentile=60.0):
     """
     Trace magnetic lineaments as connected runs of contact cells. Returns
-    (mask, table) where the table lists each lineament's length (m) and
-    strike (degrees clockwise from north, 0-180).
+    (mask, table) where the table lists each lineament's length (m),
+    strike (degrees clockwise from north, 0-180) and centroid row and column.
     """
     mask = contacts(tilt_deg, strength, percentile)
     labels, n = ndimage.label(mask, structure=np.ones((3, 3)))
@@ -140,8 +140,8 @@ def lineaments(tilt_deg, strength, cell, min_length=1500.0, percentile=60.0):
         _, _, vt = np.linalg.svd(coords, full_matrices=False)
         strike = np.degrees(np.arctan2(vt[0, 0], vt[0, 1])) % 180.0
         keep[sl][labels[sl] == i] = True
-        rows.append((length, strike))
-    return keep, np.array(rows).reshape(-1, 2)
+        rows.append((length, strike, rr.mean() + sl[0].start, cc.mean() + sl[1].start))
+    return keep, np.array(rows).reshape(-1, 4)
 
 
 def density(mask, cell, radius=1500.0):

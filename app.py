@@ -39,6 +39,7 @@ state.setdefault("source", "")
 state.setdefault("occurrences", None)
 state.setdefault("simulated", False)
 state.setdefault("booted", False)
+state.setdefault("aoi", None)          # (r0, r1, c0, c1) study-area window in cells of the full sheet, or None
 if "goto" in state:                      # a "next step" button was pressed on the previous run
     state["step"] = state.pop("goto")
 
@@ -82,7 +83,7 @@ def cached_model(token, _evidence, _occurrences, cell, buffer_m, names, occ_key,
 def load_project(layers, cell, source, simulated):
     state["project"] = gridio.harmonise(layers, cell=cell)
     state["source"] = source; state["simulated"] = simulated; state["occurrences"] = None
-    state["score"] = None; state["docx"] = None
+    state["score"] = None; state["docx"] = None; state["aoi"] = None
 
 
 def axes_km(project, step):
@@ -147,7 +148,15 @@ def need_project():
     if state["project"] is None:
         st.info("Load survey data in step 1 first.")
         st.stop()
-    return state["project"]
+    return pipeline.view_project(state["project"], state["aoi"])
+
+
+def occ_view(occ, P):
+    """Known occurrences that fall inside the current study area (for plotting)."""
+    if occ is None or not len(occ) or P.get("r0") is None:
+        return occ
+    keep = (occ["row"] >= P["r0"]) & (occ["row"] < P["r0"] + P["ny"]) & (occ["col"] >= P["c0"]) & (occ["col"] < P["c0"] + P["nx"])
+    return occ[keep]
 
 
 def mag_settings():
@@ -155,13 +164,18 @@ def mag_settings():
             state.get("sensor_height", 80.0), state.get("min_length", 1500.0))
 
 
-def all_results(project):
-    token = project_token(project)
-    mag = cached_magnetics(token, project, *mag_settings())
-    rad = cached_radiometrics(token, project)
-    reg = cached_regolith(token, project)
-    grav = cached_gravity(token, project)
-    return token, mag, rad, reg, grav
+def full_results():
+    """Processing always runs on the whole sheet so filters have no artificial edges and scores stay comparable across areas."""
+    full = state["project"]
+    token = project_token(full)
+    return (token, cached_magnetics(token, full, *mag_settings()), cached_radiometrics(token, full),
+            cached_regolith(token, full), cached_gravity(token, full))
+
+
+def all_results(view):
+    """Processed results cut to the study area `view`."""
+    token, mag, rad, reg, grav = full_results()
+    return (token,) + tuple(pipeline.crop_results(r, view) for r in (mag, rad, reg, grav))
 
 
 def kpi_band(P, mag, rad, reg):
@@ -208,6 +222,68 @@ def explain_targets(targets, evidence, project):
     return out
 
 
+def aoi_panel(F):
+    """Cut a study area out of the loaded sheet by centre and size, corner coordinates, or by drawing on the map."""
+    lon, lat = gridio.utm_to_lonlat(np.array([F["x0"], F["x0"] + F["nx"] * F["dx"]]), np.array([F["y0"], F["y0"] + F["ny"] * F["dx"]]), F["zone"])
+    sheet_km2 = F["nx"] * F["ny"] * F["dx"] ** 2 / 1e6
+    with st.container(border=True):
+        st.subheader("Study area")
+        st.write("These grids cover **%.0f km²**. Cut out the area you are working on, for example a licence block, and every map, score, target and "
+                 "export then covers only that area. Processing still runs on the whole sheet, so the edges of your area stay clean and its scores can be "
+                 "compared with the rest of the sheet." % sheet_km2)
+        mode = st.radio("Define the area by", ["Centre and size", "Corner coordinates", "Draw on the map"], horizontal=True, key="aoi_mode")
+        window, problem = None, None
+        if mode == "Centre and size":
+            a, b, c, d = st.columns(4)
+            clat = a.number_input("Centre latitude (°N)", float(lat[0]), float(lat[1]), float(state.get("aoi_clat", (lat[0] + lat[1]) / 2)), 0.01, format="%.4f")
+            clon = b.number_input("Centre longitude (°E)", float(lon[0]), float(lon[1]), float(state.get("aoi_clon", (lon[0] + lon[1]) / 2)), 0.01, format="%.4f")
+            wkm = c.number_input("Width (km)", 1.0, 200.0, float(state.get("aoi_w", 5.5)), 0.5)
+            hkm = d.number_input("Height (km)", 1.0, 200.0, float(state.get("aoi_h", 5.5)), 0.5)
+            state.update(aoi_clat=clat, aoi_clon=clon, aoi_w=wkm, aoi_h=hkm)
+            e, n = gridio.lonlat_to_utm(np.array([clon]), np.array([clat]), F["zone"])
+            window, problem = pipeline.window_from_utm(F, e[0] - wkm * 500, e[0] + wkm * 500, n[0] - hkm * 500, n[0] + hkm * 500)
+        elif mode == "Corner coordinates":
+            a, b, c, d = st.columns(4)
+            lo0 = a.number_input("West longitude (°E)", float(lon[0]), float(lon[1]), float(lon[0] + 0.1), 0.01, format="%.4f")
+            lo1 = b.number_input("East longitude (°E)", float(lon[0]), float(lon[1]), float(lon[0] + 0.15), 0.01, format="%.4f")
+            la0 = c.number_input("South latitude (°N)", float(lat[0]), float(lat[1]), float(lat[0] + 0.1), 0.01, format="%.4f")
+            la1 = d.number_input("North latitude (°N)", float(lat[0]), float(lat[1]), float(lat[0] + 0.15), 0.01, format="%.4f")
+            if lo1 <= lo0 or la1 <= la0:
+                problem = "East must be greater than west, and north greater than south."
+            else:
+                window, problem = pipeline.window_from_lonlat(F, lo0, lo1, la0, la1)
+        else:
+            st.caption("Use the box-select tool in the map's toolbar (or just drag) to draw a rectangle, then press the button below.")
+            full_view = pipeline.view_project(F, None)
+            base = "tmi" if "tmi" in F["layers"] else next(iter(F["layers"]))
+            fig = map_figure(full_view, F["layers"][base] - np.median(F["layers"][base]), gridio.LAYER_NAMES[base], "RdBu_r", True, height=520, cols=1)
+            fig.update_layout(dragmode="select", clickmode="event+select")
+            sel = st.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode="box", key="aoi_draw")
+            boxes = []
+            try:
+                boxes = sel.selection.box if sel is not None else []
+            except Exception:
+                boxes = (sel or {}).get("selection", {}).get("box", []) if isinstance(sel, dict) else []
+            if boxes:
+                bx, by = sorted(boxes[0]["x"]), sorted(boxes[0]["y"])
+                window, problem = pipeline.window_from_utm(F, bx[0] * 1000, bx[1] * 1000, by[0] * 1000, by[1] * 1000)
+            else:
+                problem = "Draw a rectangle on the map."
+        if window:
+            r0, r1, c0, c1 = window
+            st.success("Selected: %.0f km² (%d x %d cells of %.0f m), %.1f%% of the sheet." % ((r1 - r0) * (c1 - c0) * F["dx"] ** 2 / 1e6, c1 - c0, r1 - r0, F["dx"],
+                                                                                         100.0 * (r1 - r0) * (c1 - c0) / (F["nx"] * F["ny"])))
+            if (r1 - r0) * (c1 - c0) < 2500:
+                st.caption("A small area at %.0f m cells has little detail. For a finer view, upload the original grids and prepare them at 100 m or finer." % F["dx"])
+        elif problem:
+            st.info(problem)
+        a, b = st.columns(2)
+        if a.button("Use this area", type="primary", disabled=window is None, use_container_width=True):
+            state["aoi"] = window; state["docx"] = None; st.rerun()
+        if b.button("Use the whole sheet", disabled=state["aoi"] is None, use_container_width=True):
+            state["aoi"] = None; state["docx"] = None; st.rerun()
+
+
 def source_note():
     if state["simulated"]:
         st.markdown('<div class="rs-note">Simulated example data. The results do not describe any real ground.</div>', unsafe_allow_html=True)
@@ -228,10 +304,15 @@ with st.sidebar:
     step = st.radio("Workflow", STEPS, label_visibility="collapsed", key="step")
     st.divider()
     if state["project"] is not None:
-        P = state["project"]
+        F = state["project"]; P = pipeline.view_project(F, state["aoi"])
         st.markdown("**Current dataset**")
         st.write(state["source"])
-        st.caption("%d x %d cells of %.0f m, UTM zone %dN" % (P["nx"], P["ny"], P["dx"], P["zone"]))
+        st.caption("Sheet: %d x %d cells of %.0f m, UTM zone %dN" % (F["nx"], F["ny"], F["dx"], F["zone"]))
+        if state["aoi"]:
+            st.info("**Study area:** %.0f km² (%d x %d cells), %.1f%% of the sheet" % (P["nx"] * P["ny"] * P["dx"] ** 2 / 1e6, P["nx"], P["ny"],
+                                                                                    100.0 * P["nx"] * P["ny"] / (F["nx"] * F["ny"])))
+            if st.button("Back to the whole sheet", use_container_width=True):
+                state["aoi"] = None; state["docx"] = None; st.rerun()
         st.caption("Layers: " + ", ".join(gridio.LAYER_NAMES[k].split(" (")[0] for k in P["layers"]))
         if state["occurrences"] is not None:
             st.caption("%d known occurrences loaded" % len(state["occurrences"]))
@@ -400,10 +481,12 @@ elif step == DATA:
                 st.error(str(exc))
 
     if state["project"] is not None:
-        P = state["project"]
+        F = state["project"]
         st.divider()
         source_note()
-        st.subheader("Prepared layers")
+        aoi_panel(F)
+        P = pipeline.view_project(F, state["aoi"])
+        st.subheader("Prepared layers" + (" (study area)" if state["aoi"] else ""))
         st.caption("Source: " + state["source"])
         palette = {"tmi": ("RdBu_r", True), "k": ("YlOrRd", False), "eth": ("YlGn", False), "eu": ("PuBu", False), "tc": ("Viridis", False),
                    "dem": ("Earth", False), "grav": ("Spectral_r", True)}
@@ -412,7 +495,7 @@ elif step == DATA:
             with cols[i % 3]:
                 c, sym = palette.get(kind, ("Viridis", False))
                 show(map_figure(P, grid - (np.median(grid) if sym else 0), gridio.LAYER_NAMES[kind], c, sym, height=380, cols=3,
-                                occurrences=state["occurrences"]))
+                                occurrences=occ_view(state["occurrences"], P)))
         with st.expander("Data preparation report"):
             st.dataframe(pd.DataFrame(P["log"]), use_container_width=True, hide_index=True)
             st.caption("Blank cells are filled from the nearest valid cell. Radiometric spikes are replaced by the local median and negative concentrations set to zero.")
@@ -584,11 +667,17 @@ elif step == REG:
 else:
     P = need_project()
     token, mag, rad, reg, grav = all_results(P)
-    all_evidence = pipeline.evidence_layers(mag, rad, reg, grav)
+    _, f_mag, f_rad, f_reg, f_grav = full_results()
+    full_evidence = pipeline.evidence_layers(f_mag, f_rad, f_reg, f_grav)          # whole sheet: used for scoring and training
+    all_evidence = {k: pipeline.crop_results(v, P) for k, v in full_evidence.items()}  # study area: used for display
     if not all_evidence:
         st.header("Prospectivity"); st.info("Magnetic or radiometric data is needed to build evidence layers."); st.stop()
-    occ = state["occurrences"]
-    can_train = occ is not None and len(occ) >= 10
+    occ_all = state["occurrences"]
+    occ = occ_view(occ_all, P)
+    can_train = occ_all is not None and len(occ_all) >= 10
+
+    def sview(a):
+        return pipeline.crop_results(a, P)
     score_token = token + repr(mag_settings())
     if state.get("score_token") != score_token:  # data or settings changed: drop the old score
         state["score"] = None; state["docx"] = None
@@ -596,18 +685,29 @@ else:
 
     def default_score():
         if state.get("score") is None:
-            state["score"] = prospectivity.knowledge_score(all_evidence)
+            state["score"] = prospectivity.knowledge_score(full_evidence)
             state["uncertainty"] = None; state["model_info"] = None; state["score_label"] = "Prospectivity score (weighted overlay)"
             state["evidence_used"] = list(all_evidence)
         return state["score"]
 
     def current_targets():
-        score = default_score()
+        score_full = default_score()
+        score = sview(score_full)
         keep = state.get("keep_pct", 5); spacing = state.get("spacing_m", 1500)
-        threshold = float(np.quantile(score, 1 - keep / 100.0))
+        basis = state.get("threshold_basis", "area") if state["aoi"] else "area"
+        threshold = float(np.quantile(score_full if basis == "sheet" else score, 1 - keep / 100.0))
         targets = prospectivity.pick_targets(score, P, threshold, float(spacing), regime=reg["regime"] if reg else None,
-                                             depth=mag["depth"] if mag else None, uncertainty=state.get("uncertainty"))
+                                             depth=mag["depth"] if mag else None, uncertainty=sview(state.get("uncertainty")), reference=score_full)
         return score, threshold, targets
+
+    def context_note():
+        """Where the study area stands against the rest of the sheet."""
+        if not state["aoi"]:
+            return
+        full_score = default_score(); here = sview(full_score)
+        pct = 100.0 * float(np.mean(full_score < np.mean(here)))
+        top = 100.0 * float(np.mean(here >= np.quantile(full_score, 0.95)))
+        st.info("**Against the whole sheet:** this area's average score is higher than %.0f%% of the sheet, and %.0f%% of it lies in the sheet's best 5%%." % (pct, top))
 
     # ................................................................ 5
     if step == PROS:
@@ -624,6 +724,7 @@ else:
             if not use:
                 st.error("Keep at least one evidence layer active."); st.stop()
             evidence = {k: all_evidence[k] for k in use}
+            evidence_full = {k: full_evidence[k] for k in use}
             if mode.startswith("Weighted"):
                 st.caption("Each layer is scaled from 0 to 1 and combined with the weights below. The result ranks ground for follow-up. It is not a probability.")
                 cols = st.columns(len(evidence))
@@ -632,7 +733,7 @@ else:
                     weights[name] = col.slider(name, 0.0, 3.0, float(prospectivity.DEFAULT_WEIGHTS.get(name, 1.0)), 0.25, key="w_" + name)
                 if sum(weights.values()) == 0:
                     st.error("Give at least one layer a weight above zero."); st.stop()
-                state["score"] = prospectivity.knowledge_score(evidence, weights)
+                state["score"] = prospectivity.knowledge_score(evidence_full, weights)
                 state["uncertainty"] = None; state["model_info"] = None; state["score_label"] = "Prospectivity score (weighted overlay)"
             else:
                 c1, c2, c3, c4 = st.columns(4)
@@ -640,12 +741,13 @@ else:
                 n_trees = c2.slider("Trees / boosting rounds", 50, 500, 200, 50, disabled=model_kind == "Logistic regression")
                 max_depth = c3.slider("Maximum tree depth", 2, 16, 8, 1, disabled=model_kind == "Logistic regression")
                 buffer_m = c4.slider("Radius treated as mineralised (m)", 100, 1000, 300, 50)
-                occ_key = hashlib.md5(occ[["row", "col"]].to_numpy().tobytes()).hexdigest()
-                prob, unc, info = cached_model(score_token, evidence, occ, P["dx"], float(buffer_m), tuple(evidence), occ_key, model_kind, int(n_trees), int(max_depth))
+                occ_key = hashlib.md5(occ_all[["row", "col"]].to_numpy().tobytes()).hexdigest()
+                prob, unc, info = cached_model(score_token, evidence_full, occ_all, state["project"]["dx"], float(buffer_m), tuple(evidence), occ_key, model_kind, int(n_trees), int(max_depth))
                 state["score"] = prob; state["uncertainty"] = unc; state["model_info"] = info; state["score_label"] = "Prospectivity (%s)" % model_kind
             state["evidence_used"] = list(evidence)
-        score = state["score"]
+        score = sview(state["score"])
         info = state.get("model_info")
+        context_note()
         if info:
             a, b, c, d = st.columns(4)
             a.metric("Known occurrences used", info["n_occurrences"])
@@ -681,7 +783,7 @@ else:
                 hist.update_layout(title="Score distribution", xaxis_title="Score", height=260, margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white")
                 show(hist)
             if state.get("uncertainty") is not None:
-                show(map_figure(P, state["uncertainty"], "Uncertainty (spread between trees)", "Greys", False, "", height=360))
+                show(map_figure(P, sview(state["uncertainty"]), "Uncertainty (spread between trees)", "Greys", False, "", height=360))
             if reg is not None and rad is not None:
                 st.caption("Radiometric evidence is down-weighted over relict and transported cover.")
         with st.expander("Show each evidence layer"):
@@ -698,7 +800,14 @@ else:
         state["keep_pct"] = a.slider("Keep the top share of the area (%)", 1, 20, int(state.get("keep_pct", 5)), 1,
                                      help="The decision threshold. 5% keeps only the best twentieth of the survey.")
         state["spacing_m"] = b.slider("Minimum spacing between targets (m)", 500, 5000, int(state.get("spacing_m", 1500)), 250)
+        if state["aoi"]:
+            state["threshold_basis"] = "sheet" if st.radio("Cut-off is set against", ["The best of this area", "The best of the whole sheet"], horizontal=True,
+                                                          help="'Whole sheet' is stricter: it returns targets only where this area is as good as the sheet's top ground, and may return none.",
+                                                          index=0 if state.get("threshold_basis", "area") == "area" else 1, key="basis_radio").endswith("sheet") else "area"
         score, threshold, targets = current_targets()
+        context_note()
+        if not len(targets):
+            st.warning("No ground in this area clears the cut-off. Try a larger share, or set the cut-off against this area.")
         a, b, c, d = st.columns(4)
         a.metric("Score threshold", "%.2f" % threshold)
         b.metric("Search area reduced by", "%.0f%%" % prospectivity.area_reduction(score, threshold))
@@ -781,6 +890,7 @@ else:
         st.header("Decision brief")
         source_note()
         score, threshold, targets = current_targets()
+        context_note()
         area = P["nx"] * P["ny"] * P["dx"] ** 2 / 1e6
         kept = area * float(np.mean(score >= threshold))
         info = state.get("model_info")

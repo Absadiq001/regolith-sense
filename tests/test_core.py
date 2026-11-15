@@ -70,3 +70,37 @@ def test_trained_models_report_cross_validated_auc():
 def test_bundled_demo_loads():
     P = gridio.harmonise(pipeline.demo_layers(), cell=200.0)
     assert {"tmi", "k", "eth", "eu", "dem"} <= set(P["layers"]) and P["zone"] == 32
+
+
+def test_study_area_window_and_crop():
+    full = gridio.harmonise(pipeline.demo_layers(), cell=200.0)
+    lon, lat = gridio.utm_to_lonlat(np.array([full["x0"] + 20000.0]), np.array([full["y0"] + 20000.0]), full["zone"])
+    e, n = full["x0"] + 20000.0, full["y0"] + 20000.0
+    window, problem = pipeline.window_from_utm(full, e, e + 6000, n, n + 6000)
+    assert problem is None and window == (100, 130, 100, 130)
+    view = pipeline.view_project(full, window)
+    assert (view["ny"], view["nx"]) == (30, 30) and view["x0"] == full["x0"] + 100 * full["dx"]
+    # a view's grids are exactly the matching slice of the sheet
+    assert np.array_equal(view["layers"]["tmi"], full["layers"]["tmi"][100:130, 100:130])
+    # processed results cut to the same window, including the lineament table
+    mag = pipeline.run_magnetics(full)
+    cropped = pipeline.crop_results(mag, view)
+    assert cropped["field"].shape == (30, 30) and cropped["lineaments"].shape == (30, 30)
+    t = mag["lineament_table"]
+    inside = ((t[:, 2] >= 100) & (t[:, 2] < 130) & (t[:, 3] >= 100) & (t[:, 3] < 130)).sum()
+    assert len(cropped["lineament_table"]) == inside
+    # too small, and outside the survey, are refused with a reason
+    assert pipeline.window_from_utm(full, e, e + 500, n, n + 500)[0] is None
+    assert pipeline.window_from_utm(full, 0, 100, 0, 100)[0] is None
+
+
+def test_scores_are_the_same_inside_a_study_area_as_on_the_sheet():
+    full = gridio.harmonise(pipeline.demo_layers(), cell=200.0)
+    mag, rad, reg = pipeline.run_magnetics(full), pipeline.run_radiometrics(full), pipeline.run_regolith(full)
+    score = pr.knowledge_score(pipeline.evidence_layers(mag, rad, reg, None))
+    view = pipeline.view_project(full, (50, 150, 60, 170))
+    sub = pipeline.crop_results(score, view)
+    assert sub.shape == (100, 110) and np.array_equal(sub, score[50:150, 60:170])
+    T = pr.pick_targets(sub, view, float(np.quantile(sub, 0.9)), 1500.0, reference=score)
+    # target coordinates come out in the sheet's own UTM frame, inside the area
+    assert (T["Easting (m)"] >= view["x0"]).all() and (T["Easting (m)"] <= view["x0"] + view["nx"] * view["dx"]).all()

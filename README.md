@@ -24,6 +24,7 @@ It takes data that already exists for the whole country and turns it into a targ
 | Step | Input | What it produces |
 |---|---|---|
 | 1. Data | NGSA Geosoft `.grd` grids (magnetic, K, eTh, eU, TC), SRTM, optional Bouguer gravity; GeoTIFF, CSV/XYZ | One harmonised UTM grid, gap-filled and despiked, with a preparation report |
+| 1b. Study area | The loaded sheet | A licence block cut out by centre and size, corner coordinates, or by drawing on the map; all later pages, scores, targets and exports cover only that area |
 | 2. Magnetics | Total magnetic intensity | Reduction to the equator, residual, tilt angle, analytic signal, derivatives, automatic lineaments, tilt-depth to source |
 | 3. Radiometrics | K, eTh, eU | Ternary image, K/eTh, eU/eTh, F-parameter, Kd/Ud deviation, potassic-alteration mask, K–eTh crossplot |
 | 4. Regolith and gravity | SRTM, Bouguer | Relict / erosional / depositional regimes (where surface evidence can be trusted); residual gravity, Gzz, gradients |
@@ -31,6 +32,8 @@ It takes data that already exists for the whole country and turns it into a targ
 | 6. Targets and export | Score | Ranked, spaced targets with regime and depth; CSV, GeoJSON, KML, Excel, XYZ, Word report; per-target evidence table |
 | 7. 3D view | SRTM + any layer | Terrain draped with the score, target pins to estimated source depth |
 | 8. Decision brief | Everything above | One page for the person deciding where to send the team, with field instructions and an illustrative cost framing |
+
+Processing always runs on the whole sheet and the study area is cut out of the results, so filter edges never contaminate a small block, and a block's scores can be compared with the rest of the sheet (the app reports where your area ranks).
 
 The app opens with **Wamba sheet 210 (Nasarawa State)** already loaded from real NGSA grids (bundled at 200 m, 1.3 MB),
 so the whole workflow can be shown in two minutes. A clearly labelled simulated dataset (with gravity) is also included.
