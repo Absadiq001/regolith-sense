@@ -8,3 +8,11 @@ font = "sans serif"
 
 [server]
 maxUploadSize = 200
+
+[client]
+# Visitors see a short message instead of a Python traceback if something fails.
+showErrorDetails = "none"
+toolbarMode = "viewer"
+
+[browser]
+gatherUsageStats = false

@@ -16,7 +16,9 @@ from core.regolith import REGIMES
 
 st.set_page_config(page_title="RegolithSense", page_icon="🜨", layout="wide", initial_sidebar_state="expanded")
 
-STEPS = ["1. Data", "2. Magnetics", "3. Radiometrics", "4. Regolith and gravity", "5. Prospectivity", "6. Targets and export", "7. 3D view"]
+STEPS = ["Overview", "1. Data", "2. Magnetics", "3. Radiometrics", "4. Regolith and gravity", "5. Prospectivity", "6. Targets and export", "7. 3D view",
+         "8. Decision brief", "Methods and limits"]
+DATA, MAG, RAD, REG, PROS, TARG, VIEW3D, BRIEF, METHODS = STEPS[1:]
 REGIME_COLOURS = ["#b5651d", "#e8dcc0", "#5b8fb0"]
 GREEN = "#2f5d50"
 
@@ -37,6 +39,8 @@ state.setdefault("source", "")
 state.setdefault("occurrences", None)
 state.setdefault("simulated", False)
 state.setdefault("booted", False)
+if "goto" in state:                      # a "next step" button was pressed on the previous run
+    state["step"] = state.pop("goto")
 
 
 # ------------------------------------------------------------------ helpers
@@ -179,6 +183,31 @@ def kpi_band(P, mag, rad, reg):
         cols[4].metric("Model AUC", "%.2f" % info["auc"])
 
 
+def nav_buttons(current):
+    """Previous / next buttons at the foot of every step, so a visitor can walk the workflow without the sidebar."""
+    i = STEPS.index(current)
+    st.divider()
+    a, _, b = st.columns([1, 4, 1])
+    if i > 0 and a.button("← " + STEPS[i - 1].split(". ", 1)[-1], use_container_width=True, key="prev_" + current):
+        state["goto"] = STEPS[i - 1]; st.rerun()
+    if i < len(STEPS) - 1 and b.button(STEPS[i + 1].split(". ", 1)[-1] + " →", use_container_width=True, type="primary", key="next_" + current):
+        state["goto"] = STEPS[i + 1]; st.rerun()
+
+
+def explain_targets(targets, evidence, project):
+    """Evidence values at each target cell, so every pick can be justified in one row."""
+    if not len(targets):
+        return pd.DataFrame()
+    rr = np.clip(((targets["Northing (m)"].to_numpy() - project["y0"]) / project["dx"]).round().astype(int), 0, project["ny"] - 1)
+    cc = np.clip(((targets["Easting (m)"].to_numpy() - project["x0"]) / project["dx"]).round().astype(int), 0, project["nx"] - 1)
+    out = pd.DataFrame({"Target": targets["Target"]})
+    for name, layer in evidence.items():
+        out[name] = np.round(np.asarray(layer)[rr, cc], 2)
+    lead = out.drop(columns="Target").idxmax(axis=1)
+    out.insert(1, "Strongest evidence", lead)
+    return out
+
+
 def source_note():
     if state["simulated"]:
         st.markdown('<div class="rs-note">Simulated example data. The results do not describe any real ground.</div>', unsafe_allow_html=True)
@@ -196,7 +225,7 @@ if not state["booted"]:
 with st.sidebar:
     st.title("RegolithSense")
     st.caption("Targeting concealed pegmatites beneath weathering cover")
-    step = st.radio("Workflow", STEPS, label_visibility="collapsed")
+    step = st.radio("Workflow", STEPS, label_visibility="collapsed", key="step")
     st.divider()
     if state["project"] is not None:
         P = state["project"]
@@ -208,14 +237,96 @@ with st.sidebar:
             st.caption("%d known occurrences loaded" % len(state["occurrences"]))
         if state["simulated"]:
             st.warning("Simulated example data. Results are not real.")
+        have = P["layers"]
+        checks = [("Magnetics", "tmi" in have), ("Radiometrics", all(k in have for k in ("k", "eth", "eu"))),
+                  ("Regolith (needs elevation)", "dem" in have), ("Gravity", "grav" in have),
+                  ("Trained model (needs 10+ occurrences)", state["occurrences"] is not None and len(state["occurrences"]) >= 10)]
+        st.caption("\n".join(("✅ " if ok else "▫️ ") + name for name, ok in checks))
     else:
         st.caption("No dataset loaded.")
     st.divider()
     st.caption("Federal University of Lafia · UniPod\nRegolithSense prototype v2")
 
 
-# ------------------------------------------------------------------- 1 data
+# ------------------------------------------------------------------ overview
 if step == STEPS[0]:
+    st.title("RegolithSense")
+    st.subheader("Finding the pegmatites that the weathering cover hides")
+    a, b = st.columns([3, 2])
+    with a:
+        st.markdown("""
+**The problem.** Across the Nigerian Basement Complex, lithium–tantalum pegmatites and the granites that feed them lie under
+10 to 60 m of laterite and saprolite. Surface mapping sees the cover, not the rock, so most exploration is still done by
+walking, pitting and guesswork. Artisanal miners find deposits by accident; companies drill blind.
+
+**What RegolithSense does.** It takes the airborne geophysics that already exists for the whole country (NGSA magnetic and
+radiometric surveys, free SRTM elevation, satellite gravity) and turns it into a ranked list of places worth visiting:
+
+1. **Magnetics** see through the cover and map the structures and contacts that host pegmatites.
+2. **Radiometrics** detect potassium added by mineralising fluids, where the surface is in-situ rock.
+3. **Regolith mapping** says where that surface signal can be trusted and where it is transported sediment.
+4. **Gravity** points to the low-density fertile granites.
+5. A **prospectivity model** combines them, either with expert weights or trained on known occurrences and tested on ground it has not seen.
+6. The output is a **target package**: ranked coordinates, maps, a 3D view and a Word report, ready for a field team.
+
+**Why it matters.** On the Wamba sheet loaded now, the model reduces 3,058 km² to the best 5% and ranks it. A field team can
+check that in weeks instead of seasons. The same workflow runs on any NGSA sheet.
+""")
+    with b:
+        with st.container(border=True):
+            st.markdown("**Try it in two minutes**")
+            st.write("Wamba sheet 210 (Nasarawa State) is already loaded from real NGSA grids.")
+            if st.button("Start with the data →", type="primary", use_container_width=True):
+                state["goto"] = DATA; st.rerun()
+            if st.button("Jump to the ranked targets →", use_container_width=True):
+                state["goto"] = TARG; st.rerun()
+            if st.button("Read the decision brief →", use_container_width=True):
+                state["goto"] = BRIEF; st.rerun()
+        with st.container(border=True):
+            st.markdown("**What this is, and is not**")
+            st.caption("A screening tool that ranks ground for follow-up using public geophysics. Scores are rankings, not probabilities "
+                       "of a deposit, and nothing here replaces field mapping, sampling or drilling. It is not a JORC or NI 43-101 report.")
+        with st.container(border=True):
+            st.markdown("**Built by**")
+            st.caption("Abubakar Sadiq Musa, Exploration Geophysics, Federal University of Lafia · UniPod prototype, November 2026. Open source on GitHub.")
+    nav_buttons(step)
+
+elif step == METHODS:
+    st.header("Methods and limits")
+    st.write("Every number in the app comes from a published, reproducible method. This page says which, and where each one can mislead.")
+    rows = [
+        ("Grid reading and harmonisation", "Geosoft .grd reader (compressed and plain); WGS84 UTM projection; resampling with anti-alias averaging; nearest-cell gap fill; median/MAD despiking gated by global percentiles.",
+         "Sheets in degrees are reprojected, so cell sizes change slightly across a sheet. Despiking can remove real narrow anomalies if set too aggressively."),
+        ("Reduction to the equator", "FFT-domain operator with amplitude floor, for low magnetic latitudes (Nigeria, inclination about −7°).",
+         "Amplifies noise along the magnetic declination; north–south structures remain weak at low latitude."),
+        ("Edges and lineaments", "Tilt angle (Miller & Singh 1994), analytic signal (Roest et al. 1992), total horizontal derivative; lineaments from connected tilt zero-crossings gated by analytic-signal amplitude, strike by SVD.",
+         "Lineaments are automatic and unverified; flight-line noise can produce spurious east–west or north–south trends."),
+        ("Depth to source", "Tilt-depth (Salem et al. 2007): horizontal distance between the ±45° tilt contours, minus sensor height.",
+         "Assumes vertical contacts; a 100 m grid cannot resolve sources shallower than about one cell. Treat as an upper bound."),
+        ("Radiometric alteration", "K/eTh, eU/eTh, F-parameter (Efimov 1978), Kd and Ud deviation from the regional K–eTh trend (Pires 1995); ternary image (Dickson & Scott 1997).",
+         "Gamma rays come from the top 30–40 cm. Over transported cover the signal is the sediment, not the bedrock."),
+        ("Regolith regime", "Relict / erosional / depositional classes from SRTM slope, topographic position index and the eTh/K ratio (after Anand & Paine 2002).",
+         "Rule-based and uncalibrated for Nasarawa. Field checking is needed before it is used for anything beyond weighting."),
+        ("Prospectivity: weighted overlay", "Evidence layers scaled 0–1 (2nd–98th percentile) and combined with user weights (Carranza 2008). Radiometric evidence multiplied by the regolith weight.",
+         "The result is a ranking. Weights encode expert opinion, not measured likelihoods."),
+        ("Prospectivity: trained models", "Random Forest, Gradient Boosting or logistic regression on cells within a buffer of known occurrences versus distant background; accuracy by spatial block cross-validation (Roberts et al. 2017); uncertainty as the spread between trees.",
+         "Known occurrences are biased to where people have looked. Fewer than about 25 occurrences gives unstable, optimistic accuracy."),
+        ("Targets", "Local maxima of the score above a percentile threshold, at least a chosen distance apart, ranked and tagged with regime and depth.",
+         "Targets are places to check on the ground, not drill collars."),
+    ]
+    st.dataframe(pd.DataFrame(rows, columns=["Stage", "Method", "Where it can mislead"]), use_container_width=True, hide_index=True, height=420)
+    st.markdown("""
+**References.** Anand & Paine 2002, *Aust. J. Earth Sci.* 49; Carranza 2008, *Geochemical Anomaly and Mineral Prospectivity Mapping in GIS*;
+Dickson & Scott 1997, *AGSO J.* 17; Efimov 1978; Miller & Singh 1994, *J. Appl. Geophys.* 32; Pires 1995, *Rev. Bras. Geociências* 25;
+Roberts et al. 2017, *Ecography* 40; Roest, Verhoef & Pilkington 1992, *Geophysics* 57; Salem et al. 2007, *The Leading Edge* 26.
+
+**Data.** Nigerian Geological Survey Agency airborne magnetic and radiometric grids (2005–2009 national survey, 500 m line spacing, 80 m clearance);
+SRTM 1-arc-second elevation. Satellite gravity (WGM2012 or GGMplus) can be added as a Bouguer grid.
+""")
+    nav_buttons(step)
+
+# ------------------------------------------------------------------- 1 data
+elif step == DATA:
     st.header("Survey data")
     st.write("Upload the grids for one survey area. RegolithSense reads Geosoft grids (.grd) as supplied by NGSA and Oasis montaj, "
              "GeoTIFF, and CSV or XYZ point files. Layers in different cell sizes or coordinate systems are brought onto one grid.")
@@ -299,7 +410,7 @@ if step == STEPS[0]:
             st.download_button("Download prepared grids (CSV, easting/northing/values)", report.all_layers_xyz(P), "regolithsense_prepared_grids.csv", "text/csv")
 
 # -------------------------------------------------------------- 2 magnetics
-elif step == STEPS[1]:
+elif step == MAG:
     P = need_project()
     st.header("Magnetic interpretation")
     if "tmi" not in P["layers"]:
@@ -364,7 +475,7 @@ elif step == STEPS[1]:
                        "so treat these as upper bounds on cover thickness, to be checked by drilling or ground geophysics." % P["dx"])
 
 # ----------------------------------------------------------- 3 radiometrics
-elif step == STEPS[2]:
+elif step == RAD:
     P = need_project()
     st.header("Radiometric alteration")
     token, mag, rad, reg, grav = all_results(P)
@@ -420,7 +531,7 @@ elif step == STEPS[2]:
                    "or K-feldspar-rich rock. Cells below it are leached.")
 
 # --------------------------------------------------------------- 4 regolith
-elif step == STEPS[3]:
+elif step == REG:
     P = need_project()
     st.header("Regolith and gravity")
     token, mag, rad, reg, grav = all_results(P)
@@ -490,7 +601,7 @@ else:
         return score, threshold, targets
 
     # ................................................................ 5
-    if step == STEPS[4]:
+    if step == PROS:
         st.header("Prospectivity")
         kpi_band(P, mag, rad, reg); source_note()
         with st.container(border=True):
@@ -571,7 +682,7 @@ else:
                     show(map_figure(P, layer, name, "Viridis", False, "", height=360, cols=3))
 
     # ................................................................ 6
-    elif step == STEPS[5]:
+    elif step == TARG:
         st.header("Targets and export")
         kpi_band(P, mag, rad, reg); source_note()
         a, b = st.columns(2)
@@ -586,6 +697,10 @@ else:
         d.metric("High priority", int((targets["Priority"] == "High").sum()) if len(targets) else 0)
         show(map_figure(P, score, state["score_label"] + " with ranked targets", "Viridis", False, "", points=targets, occurrences=occ, height=600))
         st.dataframe(targets, use_container_width=True, hide_index=True)
+        with st.expander("Why these targets? Evidence at each one"):
+            used = {k: all_evidence[k] for k in state.get("evidence_used", list(all_evidence)) if k in all_evidence}
+            st.dataframe(explain_targets(targets, used, P), use_container_width=True, hide_index=True)
+            st.caption("Each evidence layer is scaled 0 to 1; higher means more favourable. 'Strongest evidence' is the layer that contributes most at that cell.")
         st.caption("Targets are the highest points of the score, ranked best first. They are places to check on the ground, not drill-ready collars, "
                    "and this is not a JORC or NI 43-101 report.")
         st.subheader("Target package")
@@ -607,7 +722,7 @@ else:
                                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
 
     # ................................................................ 7
-    else:
+    elif step == VIEW3D:
         st.header("3D view")
         kpi_band(P, mag, rad, reg); source_note()
         score, threshold, targets = current_targets()
@@ -651,3 +766,71 @@ else:
         st.caption("Terrain from the elevation grid, coloured by the chosen layer. Target pins reach down to the tilt-depth estimate of the nearest magnetic "
                    "source, a rough guide to how deep the cover is at each target, not a measured thickness." if "dem" in P["layers"] else
                    "No elevation grid in this dataset, so the surface is flat. Add SRTM in step 1 for terrain.")
+
+    # ................................................................ 8
+    else:
+        st.header("Decision brief")
+        source_note()
+        score, threshold, targets = current_targets()
+        area = P["nx"] * P["ny"] * P["dx"] ** 2 / 1e6
+        kept = area * float(np.mean(score >= threshold))
+        info = state.get("model_info")
+        st.write("A one-page summary of what the data say about **%s**, written for someone deciding where to send a field team." % state["source"].split(" (")[0])
+        c = st.columns(4)
+        c[0].metric("Survey area", "%.0f km²" % area)
+        c[1].metric("Ground worth visiting", "%.0f km²" % kept, "-%.0f%%" % prospectivity.area_reduction(score, threshold), delta_color="inverse")
+        c[2].metric("Ranked targets", len(targets), "%d high priority" % int((targets["Priority"] == "High").sum()) if len(targets) else None)
+        c[3].metric("Model check", "AUC %.2f" % info["auc"] if info and info.get("auc") is not None else "Expert weights", help="Spatially cross-validated where occurrences were supplied.")
+        a, b = st.columns([3, 2])
+        with a:
+            show(map_figure(P, score, "Prospectivity with ranked targets", "Viridis", False, "", points=targets, occurrences=occ, height=520))
+        with b:
+            st.markdown("**Top targets**")
+            used = {k: all_evidence[k] for k in state.get("evidence_used", list(all_evidence)) if k in all_evidence}
+            why = explain_targets(targets.head(5), used, P)
+            for (_, t), (_, w) in zip(targets.head(5).iterrows(), why.iterrows()):
+                with st.container(border=True):
+                    st.markdown("**%s** · %s priority · score %.2f" % (t["Target"], t["Priority"], t["Score"]))
+                    bits = ["%.5f°N %.5f°E" % (t["Latitude"], t["Longitude"])]
+                    if "Regolith regime" in t: bits.append("%s regolith" % t["Regolith regime"])
+                    if t.get("Depth to magnetic source (m)") is not None and not pd.isna(t.get("Depth to magnetic source (m)")):
+                        bits.append("source about %d m down" % int(t["Depth to magnetic source (m)"]))
+                    bits.append("led by " + str(w["Strongest evidence"]).lower())
+                    st.caption(" · ".join(bits))
+        st.subheader("What the field team should do")
+        notes = []
+        if reg is not None:
+            dep = int((targets.get("Regolith regime", pd.Series(dtype=str)) == "depositional").sum()) if len(targets) else 0
+            notes.append("%d of %d targets sit on transported cover, where surface sampling will not see bedrock; plan auger or pit sampling there." % (dep, len(targets)))
+        if mag is not None:
+            d = mag["depth"][np.isfinite(mag["depth"])]
+            if d.size:
+                notes.append("Magnetic sources are typically %.0f m below surface (median tilt-depth), so expect cover of that order or less at the targets." % np.median(d))
+        if rad is not None:
+            notes.append("Potassic alteration is flagged over %.1f%% of the sheet; check targets led by potassium evidence with a hand-held spectrometer and K-feldspar logging." % (100 * rad["alteration"].mean()))
+        if info is None:
+            notes.append("No known occurrences were supplied, so the ranking uses expert weights. Add the known pegmatites of the area to test and retrain the model.")
+        elif info.get("auc") is not None and info["n_occurrences"] < 25:
+            notes.append("The trained model has only %d occurrences; the AUC of %.2f is optimistic. Treat the ranking as a guide, not a verdict." % (info["n_occurrences"], info["auc"]))
+        notes.append("Visit targets in rank order; log outcrop, float, artisanal workings and take soil or stream samples. Feed confirmed and empty sites back into the occurrence file.")
+        for n in notes:
+            st.markdown("- " + n)
+        with st.expander("Illustrative cost framing"):
+            cost = st.number_input("Reconnaissance cost per km² (₦ thousand, your estimate)", 10, 5000, 150, 10,
+                                   help="Field mapping, sampling and logistics per square kilometre. Change it to your own budget figures.")
+            st.write("Covering the whole sheet at that rate: **₦%.0f million**. Covering only the ranked ground: **₦%.0f million**." % (area * cost / 1000, kept * cost / 1000))
+            st.caption("Arithmetic on your own assumption, shown to make the trade-off concrete. It is not a quotation.")
+        st.subheader("Export")
+        e = st.columns(3)
+        e[0].download_button("Targets (CSV)", targets.to_csv(index=False).encode(), "regolithsense_targets.csv", "text/csv", use_container_width=True)
+        e[1].download_button("Targets (KML)", report.targets_kml(targets), "regolithsense_targets.kml", "application/vnd.google-earth.kml+xml", use_container_width=True)
+        if e[2].button("Build Word report", use_container_width=True, type="primary", key="brief_docx"):
+            with st.spinner("Drawing maps and writing the report"):
+                state["docx"] = report.word_report(P, state["source"], mag, rad, reg, score, state["score_label"], targets, info,
+                                                   ["Simulated example data: the results do not describe real ground."] if state["simulated"] else [])
+        if state.get("docx"):
+            st.download_button("Download Word report", state["docx"], "regolithsense_report.docx",
+                               "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="brief_docx_dl")
+
+if step not in (STEPS[0], METHODS):
+    nav_buttons(step)

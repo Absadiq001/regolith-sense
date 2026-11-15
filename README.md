@@ -1,90 +1,92 @@
-# RegolithSense Enterprise ⚡
-**A Cloud-Native Multi-Physics Inversion and Spatial AI Prospectivity Platform for Deeply Concealed Critical Mineral Systems Beneath Tropical Weathering Cover**
+# RegolithSense
 
-*Pan-African MineTech Exploration Technology Pre-Incubation Programme — Nigeria Track*  
-*Hosted at Nasarawa State University Keffi (NSUK) Mine-Tech UniPod in partnership with UNDP timbuktoo*
+**Finding the pegmatites that the weathering cover hides.**
+A screening tool that turns Nigeria's existing airborne geophysics into a ranked list of places worth visiting.
 
-🌐 **Live Interactive App:** [absadiq001-regolith-sense-app-xvaabs.streamlit.app](https://absadiq001-regolith-sense-app-xvaabs.streamlit.app)  
-📂 **Venture / Team:** GeoSense Dynamics
+*Pan-African MineTech Exploration Technology Pre-Incubation Programme — Nigeria Track*
+*Nasarawa State University Keffi Mine-Tech UniPod, in partnership with UNDP timbuktoo*
 
----
-
-## 🎯 Executive Problem Statement
-A fundamental paradox defines mineral exploration across tropical Nigeria:
-* The country hosts world-class endowments of energy transition minerals—including **Lithium-Cesium-Tantalum (LCT) pegmatites**, **Rare Earth Elements (REEs)**, and **columbite-tantalite** across Nasarawa, Plateau, Kaduna, Kogi, and Kwara states.
-* However, **tens of millions of years of intense chemical weathering** have buried prospective bedrock beneath **15 to over 80 meters** of barren lateritic duricrust, saprolite, and dense vegetation.
-* **Optical satellites (Landsat, Sentinel-2, ASTER) cannot penetrate this blanket**, while surface soil geochemistry is heavily leached and displaced downslope. Junior exploration teams routinely waste up to 50% of their early-stage capital on unguided, blind grid drilling ($150–$250/m).
-
-**RegolithSense Enterprise** solves this bottleneck using **computational potential-field geophysics, satellite gravity, airborne gamma-ray radiometrics, and spatial machine learning**, which physically penetrate non-magnetic lateritic regolith to map blind ore bodies before drilling starts.
+**Live app:** https://absadiq001-regolith-sense-app-xvaabs.streamlit.app
+**Team:** GeoSense Dynamics, Federal University of Lafia
 
 ---
 
-## 🔬 Core Technological Innovation
+## The problem
 
-1. **Sub-Regolith Magnetic Wavefield Inversion**  
-   High-resolution aeromagnetic grids are processed through frequency-domain filters: First Vertical Derivative (1VD via 2D FFT), Total Horizontal Derivative (THDR), Analytic Signal (AS), and the Tilt Angle Derivative (TDR; Miller & Singh, 1994). Because magnetic fields pass through non-magnetic regolith without attenuation, these operators trace deep shear zones, brittle faults, and buried pegmatite dyke swarms obscured beneath laterite.
+Across the Nigerian Basement Complex, lithium–tantalum pegmatites and the granites that feed them lie under 10 to 60 m of
+laterite and saprolite. Optical satellites and surface mapping see the cover, not the rock. Exploration is still done by
+walking, pitting and guesswork; artisanal miners find deposits by accident and companies drill blind.
 
-2. **Satellite-Derived Bouguer Gravity & Density Inversion**  
-   The platform ingests ultrahigh-resolution GGMplus (200m resolution) and WGM2012 satellite gravity. Felsic peraluminous leucogranites (the parent magmas of lithium pegmatites) are lighter (density ~ 2.58–2.64 g/cm³) than their host migmatites and amphibolites (density ~ 2.78–3.05 g/cm³). Negative Bouguer anomalies and vertical gravity gradients (Gzz, in Eotvos units) directly pinpoint fertile intrusive roots beneath cover without the high cost of ground acquisition.
+## What RegolithSense does
 
-3. **Gamma-Ray Spectrometry & Alteration Analysis**  
-   Total count (TC) and radioelements (K %, eTh ppm, eU ppm) are evaluated. Diagnostic ratios (K/eTh, eU/eTh, eU/K) and the Efimov/Saunders F-parameter alteration index (F = K × eU / eTh) isolate the hydrothermal potassic metasomatism (microcline, muscovite, lepidolite) typical of LCT pegmatites, separating weathered in-situ bedrock from transported barren laterite gravels.
+It takes data that already exists for the whole country and turns it into a target package for a field team:
 
-4. **Machine Learning Mineral Prospectivity Mapping (MPM)**  
-   Supervised Random Forest, Gradient Boosting, and Weights of Evidence (WofE) ensemble classifiers integrate structural proximity, magnetic contrast, gravity density lows, and radiometric indices into a unified predictive model (ROC-AUC > 0.92), generating ranked Tier-1, Tier-2, and Tier-3 drill targets.
+| Step | Input | What it produces |
+|---|---|---|
+| 1. Data | NGSA Geosoft `.grd` grids (magnetic, K, eTh, eU, TC), SRTM, optional Bouguer gravity; GeoTIFF, CSV/XYZ | One harmonised UTM grid, gap-filled and despiked, with a preparation report |
+| 2. Magnetics | Total magnetic intensity | Reduction to the equator, residual, tilt angle, analytic signal, derivatives, automatic lineaments, tilt-depth to source |
+| 3. Radiometrics | K, eTh, eU | Ternary image, K/eTh, eU/eTh, F-parameter, Kd/Ud deviation, potassic-alteration mask, K–eTh crossplot |
+| 4. Regolith and gravity | SRTM, Bouguer | Relict / erosional / depositional regimes (where surface evidence can be trusted); residual gravity, Gzz, gradients |
+| 5. Prospectivity | Evidence layers, optional known occurrences | Weighted overlay, or Random Forest / Gradient Boosting / logistic regression with spatial block cross-validation, ROC, importances, uncertainty |
+| 6. Targets and export | Score | Ranked, spaced targets with regime and depth; CSV, GeoJSON, KML, Excel, XYZ, Word report; per-target evidence table |
+| 7. 3D view | SRTM + any layer | Terrain draped with the score, target pins to estimated source depth |
+| 8. Decision brief | Everything above | One page for the person deciding where to send the team, with field instructions and an illustrative cost framing |
 
-5. **3D Subsurface Profiling & Enterprise Reporting**  
-   Renders 3D digital elevation models (DEM) with draped prospectivity surfaces, cutaway slicing, and planned drillhole strings. Exploration teams can import survey data (CSV/XYZ) and automatically generate JORC-aligned Word (.docx) and Excel (.xlsx) technical reports with one click.
+The app opens with **Wamba sheet 210 (Nasarawa State)** already loaded from real NGSA grids (bundled at 200 m, 1.3 MB),
+so the whole workflow can be shown in two minutes. A clearly labelled simulated dataset (with gravity) is also included.
 
----
+## What it is not
 
-## 🚀 Live Demo & Local Run
+Scores are rankings, not probabilities of a deposit. The regolith classes are rule-based and uncalibrated. Nothing here
+replaces field mapping, sampling or drilling, and the outputs are not a JORC or NI 43-101 report. The *Methods and limits*
+page in the app lists every method, its reference, and where it can mislead.
 
-### Access the Live Cloud Platform:
-Visit: **[https://absadiq001-regolith-sense-app-xvaabs.streamlit.app](https://absadiq001-regolith-sense-app-xvaabs.streamlit.app)**
+## Run it
 
-### Run Locally:
 ```bash
-# Clone the repository
 git clone https://github.com/Absadiq001/regolith-sense.git
 cd regolith-sense
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Launch the platform
 streamlit run app.py
 ```
 
----
+Tests: `python -m pytest -q tests`
 
-## 📊 Commercial & ESG Impact
-* **Search Space Reduction:** Shrinks regional exploration licenses by **>80%**, saving exploration companies up to 50% on preliminary drilling budgets.
-* **Safer Mining Corridors:** Guides artisanal and small-scale mining (ASM) cooperatives to verified mineralized contacts, preventing dangerous blind pitting and fatal trench collapses.
-* **Environmental Stewardship:** Prevents unnecessary deforestation and bulldozer trenching across tropical ecosystems (SDG 15: Life on Land).
-* **Energy Transition Minerals:** Accelerates the domestic supply pipeline for lithium, tantalum, and REEs essential for global decarbonization (SDG 7 & SDG 13).
+Deploy: push to GitHub and point [Streamlit Community Cloud](https://share.streamlit.io) at `app.py`.
 
----
+## Repository layout
 
-## 👥 Core Team (GeoSense Dynamics)
-* **Abubakar Sadiq Musa** — Team Lead & Computational Geophysicist *(Founder)*  
-  `abubakarmusa.sm@gmail.com` | Federal University of Lafia (FULafia)
-* **Abdulrafiu Sheriff** — GIS, Remote Sensing & AI Lead *(Co-Founder)*  
-  `sheriff99903@student.fulafia.edu.ng` | Federal University of Lafia (FULafia)
-* **Galadima Abdulhamid Abdullahi** — Geologist & Environmental Geochemistry / ESG Lead  
-  `galadima1415@gmail.com` | Federal University of Lafia (FULafia)
-* **Sani Muhammad Muktar** — Stakeholder & Community Operations Lead  
-  `muhammadmuk177@gmail.com` | Federal University of Lafia (FULafia)
-* **Iposhi Martins David** — Field Exploration & Ground-Truthing Lead  
-  `iposhimartins@gmail.com` | Federal University of Lafia (FULafia)
+```
+app.py                  Streamlit interface (ten pages, one map helper, cached processing)
+core/geosoft.py         Geosoft .grd reader (plain and compressed)
+core/gridio.py          File readers, UTM projection, harmonisation, gap fill, despike, occurrences
+core/magnetics.py       FFT filters, RTE, derivatives, tilt-depth, lineament tracing
+core/radiometrics.py    Ratios, F-parameter, Kd/Ud, ternary, alteration mask
+core/regolith.py        Terrain analysis and regolith regimes
+core/prospectivity.py   Evidence stack, weighted overlay, trained models with spatial CV, target picking
+core/pipeline.py        Runs each stage; bundled demo and simulated datasets
+core/report.py          Word report, Excel workbook, XYZ, GeoJSON, KML
+core/synthetic_geology.py  Simulated survey generator
+data/wamba_210_demo.npz NGSA Wamba 210 grids resampled to 200 m
+tests/test_core.py      Numerical checks
+```
 
----
+## Data
 
-## 📚 References
-* Anand, R. R., & Butt, C. R. M. (2010). A guide for mineral exploration through the regolith in the Yilgarn Craton, Western Australia. *Australian Journal of Earth Sciences*, 57(8), 1015–1114.
-* Černý, P., & Ercit, T. S. (2005). The classification of granitic pegmatites revisited. *The Canadian Mineralogist*, 43(6), 2005–2026.
-* Garba, I. (2003). Geochemical characteristics of Mesoproterozoic rare-metal pegmatites in the Pan-African reactivation zone of Nigeria. *Journal of African Earth Sciences*, 36(4), 239–246.
-* Hirt, C., Claessens, S., Fecher, T., Kuhn, M., Pail, R., & Rexer, M. (2013). New ultrahigh-resolution picture of Earth's gravity field. *Geophysical Research Letters*, 40(16), 4279–4283.
-* Miller, H. G., & Singh, V. (1994). Potential field tilt—A new concept for location of potential field sources. *Journal of Applied Geophysics*, 32(2–3), 213–217.
-* Rodriguez-Galiano, V., Sanchez-Castillo, M., Chica-Olmo, M., & Chica-Rivas, M. (2015). Machine learning predictive modelling for mineral prospectivity mapping with Random Forest and Weights of Evidence. *Ore Geology Reviews*, 71, 804–818.
-* Saunders, D. F., Burson, K. R., & Thompson, C. K. (1994). Model for airborne trace element and gamma-ray exploration. *Journal of Geochemical Exploration*, 51(3), 255–274.
+Nigerian Geological Survey Agency airborne magnetic and radiometric grids (2005–2009 national survey, 500 m line spacing,
+80 m terrain clearance); SRTM 1-arc-second elevation. Satellite gravity (WGM2012, GGMplus) can be added as a Bouguer grid.
+
+## Team (GeoSense Dynamics)
+
+* **Abubakar Sadiq Musa** — Team Lead & Computational Geophysicist *(Founder)*, Federal University of Lafia
+* **Abdulrafiu Sheriff** — GIS, Remote Sensing & AI Lead *(Co-Founder)*
+* **Galadima Abdulhamid Abdullahi** — Geologist & Environmental Geochemistry / ESG Lead
+* **Sani Muhammad Muktar** — Stakeholder & Community Operations Lead
+* **Iposhi Martins David** — Field Exploration & Ground-Truthing Lead
+
+## References
+
+Anand & Paine 2002, *Aust. J. Earth Sci.* 49 · Carranza 2008, *Geochemical Anomaly and Mineral Prospectivity Mapping in GIS* ·
+Dickson & Scott 1997, *AGSO J.* 17 · Miller & Singh 1994, *J. Appl. Geophys.* 32 · Pires 1995, *Rev. Bras. Geociências* 25 ·
+Roberts et al. 2017, *Ecography* 40 · Roest, Verhoef & Pilkington 1992, *Geophysics* 57 · Salem et al. 2007, *The Leading Edge* 26 ·
+Černý & Ercit 2005, *Can. Mineral.* 43.
