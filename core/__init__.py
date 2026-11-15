@@ -1,3 +1,1 @@
-"""
-RegolithSense Core Geophysical Package
-"""
+"""RegolithSense processing modules."""

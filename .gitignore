@@ -11,3 +11,8 @@ ENV/
 .vscode/
 *.docx
 *.xlsx
+
+# Survey data is licensed and must not be committed
+data/
+*.grd
+*.gi
