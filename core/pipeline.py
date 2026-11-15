@@ -1,4 +1,6 @@
 """Runs each processing stage on a harmonised project and returns plain dicts of grids."""
+import os
+
 import numpy as np
 
 from . import magnetics as mg
@@ -14,6 +16,16 @@ def simulated_layers():
     base = {"x0": 400000.0, "y0": 950000.0, "dx": 100.0, "dy": 100.0, "units": "m"}
     names = {"tmi": "tmi", "k": "k", "eth": "eth", "eu": "eu", "dem": "elevation", "grav": "bouguer"}
     return {kind: dict(base, grid=np.asarray(d[src], float)) for kind, src in names.items()}
+
+
+DEMO_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "wamba_210_demo.npz")
+
+
+def demo_layers():
+    """Wamba sheet 210 (Nasarawa State) from NGSA airborne grids, resampled to 200 m for a quick demonstration."""
+    d = np.load(DEMO_PATH)
+    base = {"x0": float(d["x0"]), "y0": float(d["y0"]), "dx": float(d["dx"]), "dy": float(d["dx"]), "units": "m"}
+    return {k: dict(base, grid=np.asarray(d[k], float)) for k in d.files if k not in ("x0", "y0", "dx", "zone")}
 
 
 def run_magnetics(project, inclination=-7.0, declination=-2.0, reduce=True, sensor_height=80.0, min_length=1500.0):

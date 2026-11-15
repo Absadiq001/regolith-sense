@@ -1,6 +1,6 @@
 """
 RegolithSense: targeting concealed pegmatites beneath weathering cover from
-airborne magnetic and radiometric surveys.
+airborne magnetic, radiometric and gravity surveys.
 
 Run with:  streamlit run app.py
 """
@@ -14,10 +14,20 @@ import streamlit as st
 from core import gridio, pipeline, prospectivity, report
 from core.regolith import REGIMES
 
-st.set_page_config(page_title="RegolithSense", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="RegolithSense", page_icon="🜨", layout="wide", initial_sidebar_state="expanded")
 
-STEPS = ["1. Data", "2. Magnetics", "3. Radiometrics", "4. Regolith", "5. Prospectivity", "6. Targets and export"]
+STEPS = ["1. Data", "2. Magnetics", "3. Radiometrics", "4. Regolith and gravity", "5. Prospectivity", "6. Targets and export", "7. 3D view"]
 REGIME_COLOURS = ["#b5651d", "#e8dcc0", "#5b8fb0"]
+GREEN = "#2f5d50"
+
+st.markdown("""
+<style>
+div[data-testid="stMetric"] {background: #f4f7f5; border: 1px solid #e1e8e4; border-radius: 10px; padding: 10px 14px;}
+div[data-testid="stMetric"] label {color: #5c6b65;}
+section[data-testid="stSidebar"] {border-right: 1px solid #e1e8e4;}
+.rs-note {background:#fff6e5; border-left:3px solid #c98a1b; padding:8px 12px; border-radius:6px; font-size:0.9rem;}
+</style>
+""", unsafe_allow_html=True)
 
 state = st.session_state
 state.setdefault("uploads", {})      # file name -> {kind or None: raw layer}
@@ -26,6 +36,7 @@ state.setdefault("project", None)
 state.setdefault("source", "")
 state.setdefault("occurrences", None)
 state.setdefault("simulated", False)
+state.setdefault("booted", False)
 
 
 # ------------------------------------------------------------------ helpers
@@ -58,9 +69,16 @@ def cached_gravity(token, _project):
     return pipeline.run_gravity(_project)
 
 
-@st.cache_data(show_spinner="Training the model")
-def cached_forest(token, _evidence, _occurrences, cell, buffer_m, names, occ_key):
-    return prospectivity.train_forest(_evidence, _occurrences, cell, buffer_m=buffer_m)
+@st.cache_data(show_spinner="Training and cross-validating the model")
+def cached_model(token, _evidence, _occurrences, cell, buffer_m, names, occ_key, model_kind, n_trees, max_depth):
+    return prospectivity.train_forest(_evidence, _occurrences, cell, buffer_m=buffer_m, n_trees=n_trees,
+                                      model_kind=model_kind, max_depth=max_depth)
+
+
+def load_project(layers, cell, source, simulated):
+    state["project"] = gridio.harmonise(layers, cell=cell)
+    state["source"] = source; state["simulated"] = simulated; state["occurrences"] = None
+    state["score"] = None; state["docx"] = None
 
 
 def axes_km(project, step):
@@ -69,7 +87,8 @@ def axes_km(project, step):
     return x, y
 
 
-def map_figure(project, grid, title, colours="Viridis", symmetric=False, unit="", mask=None, points=None, occurrences=None, discrete=None, height=520, cols=2):
+def map_figure(project, grid, title, colours="Viridis", symmetric=False, unit="", mask=None, points=None, occurrences=None,
+               discrete=None, height=520, cols=2, contour=None):
     """One interactive map. Every map in the app goes through here so they look and behave the same.
     `cols` is how many maps share the row; the figure height follows the grid's aspect so the map fills the frame."""
     width_px = {1: 820, 2: 440, 3: 290, 4: 215}.get(cols, 440)
@@ -92,6 +111,9 @@ def map_figure(project, grid, title, colours="Viridis", symmetric=False, unit=""
             m = max(abs(lo), abs(hi)); lo, hi = -m, m
         fig.add_trace(go.Heatmap(z=z, x=x, y=y, colorscale=colours, zmin=float(lo), zmax=float(hi), colorbar=dict(title=unit, thickness=14),
                                  hovertemplate="E %{x:.1f} km<br>N %{y:.1f} km<br>%{z:.3g} " + unit + "<extra></extra>"))
+    if contour is not None:
+        fig.add_trace(go.Contour(z=z, x=x, y=y, contours=dict(start=contour, end=contour, size=1, coloring="none"),
+                                 line=dict(color="black", width=1), showscale=False, hoverinfo="skip"))
     if mask is not None:
         rr, cc = np.nonzero(mask)
         if rr.size > 20000:
@@ -138,6 +160,38 @@ def all_results(project):
     return token, mag, rad, reg, grav
 
 
+def kpi_band(P, mag, rad, reg):
+    """The headline numbers, shown at the top of every processing step."""
+    area = P["nx"] * P["ny"] * P["dx"] ** 2 / 1e6
+    cols = st.columns(5)
+    cols[0].metric("Survey area", "%.0f km²" % area, help="%d x %d cells of %.0f m" % (P["nx"], P["ny"], P["dx"]))
+    if mag is not None:
+        t = mag["lineament_table"]
+        cols[1].metric("Magnetic lineaments", len(t), help="Traced from tilt-angle zero crossings")
+        d = mag["depth"][np.isfinite(mag["depth"])]
+        cols[2].metric("Median depth to source", "%.0f m" % np.median(d) if d.size else "n/a", help="Tilt-depth along magnetic contacts")
+    if rad is not None:
+        cols[3].metric("Potassic alteration", "%.1f%% of area" % (100 * rad["alteration"].mean()))
+    if reg is not None:
+        cols[4].metric("Transported cover", "%.0f%% of area" % (100 * float((reg["regime"] == 3).mean())), help="Depositional regolith regime")
+    info = state.get("model_info")
+    if info and info.get("auc") is not None and reg is None:
+        cols[4].metric("Model AUC", "%.2f" % info["auc"])
+
+
+def source_note():
+    if state["simulated"]:
+        st.markdown('<div class="rs-note">Simulated example data. The results do not describe any real ground.</div>', unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------------ first run
+if not state["booted"]:
+    state["booted"] = True
+    try:
+        load_project(pipeline.demo_layers(), 200.0, "Wamba sheet 210, Nasarawa State (NGSA airborne survey, 200 m demo grid)", False)
+    except Exception:
+        pass
+
 # ------------------------------------------------------------------ sidebar
 with st.sidebar:
     st.title("RegolithSense")
@@ -150,10 +204,14 @@ with st.sidebar:
         st.write(state["source"])
         st.caption("%d x %d cells of %.0f m, UTM zone %dN" % (P["nx"], P["ny"], P["dx"], P["zone"]))
         st.caption("Layers: " + ", ".join(gridio.LAYER_NAMES[k].split(" (")[0] for k in P["layers"]))
+        if state["occurrences"] is not None:
+            st.caption("%d known occurrences loaded" % len(state["occurrences"]))
         if state["simulated"]:
             st.warning("Simulated example data. Results are not real.")
     else:
         st.caption("No dataset loaded.")
+    st.divider()
+    st.caption("Federal University of Lafia · UniPod\nRegolithSense prototype v2")
 
 
 # ------------------------------------------------------------------- 1 data
@@ -164,7 +222,7 @@ if step == STEPS[0]:
     left, right = st.columns([3, 2])
     with left:
         files = st.file_uploader("Survey files", type=["grd", "tif", "tiff", "csv", "xyz", "txt"], accept_multiple_files=True,
-                                 help="Magnetic field, potassium, thorium, uranium, and optionally elevation and gravity.")
+                                 help="Magnetic field, potassium, thorium, uranium, total count, and optionally elevation and Bouguer gravity.")
         for f in files or []:
             if f.name not in state["uploads"]:
                 try:
@@ -186,23 +244,26 @@ if step == STEPS[0]:
                     chosen[pick] = layer
                 else:
                     chosen[kind] = layer
-        cell = st.select_slider("Working cell size (m)", options=[50, 100, 125, 200, 250, 500], value=100)
+        cell = st.select_slider("Working cell size (m)", options=[50, 100, 125, 200, 250, 500], value=100,
+                                help="Smaller cells keep more detail but take longer. 100 m suits NGSA 500 m line-spaced surveys.")
         if st.button("Prepare data", type="primary", disabled=not chosen):
             try:
                 with st.spinner("Bringing layers onto one grid"):
-                    state["project"] = gridio.harmonise(chosen, cell=float(cell))
-                state["source"] = ", ".join(sorted(state["uploads"]))
-                state["simulated"] = False; state["occurrences"] = None
+                    load_project(chosen, float(cell), ", ".join(sorted(state["uploads"])), False)
             except Exception as exc:
                 st.error(str(exc))
             else:
                 st.rerun()
     with right:
-        st.subheader("No data to hand?")
-        st.write("Load a simulated survey to see how the workflow runs. It is computer-generated and does not describe any real ground.")
-        if st.button("Load simulated example"):
-            state["project"] = gridio.harmonise(pipeline.simulated_layers(), cell=100.0)
-            state["source"] = "Simulated example"; state["simulated"] = True; state["occurrences"] = None
+        st.subheader("Ready-made datasets")
+        st.write("**Wamba sheet 210, Nasarawa State.** NGSA magnetic, K, eTh, eU and SRTM grids, resampled to 200 m so it loads in seconds.")
+        if st.button("Load Wamba 210 (NGSA)", type="primary", use_container_width=True):
+            with st.spinner("Loading Wamba 210"):
+                load_project(pipeline.demo_layers(), 200.0, "Wamba sheet 210, Nasarawa State (NGSA airborne survey, 200 m demo grid)", False)
+            st.rerun()
+        st.write("**Simulated survey.** Computer-generated, includes gravity, useful for showing the full workflow. It does not describe any real ground.")
+        if st.button("Load simulated example", use_container_width=True):
+            load_project(pipeline.simulated_layers(), 100.0, "Simulated example", True)
             st.rerun()
         st.subheader("Known occurrences (optional)")
         st.write("A CSV of known pegmatite or mine locations with easting/northing or longitude/latitude columns. "
@@ -220,9 +281,10 @@ if step == STEPS[0]:
 
     if state["project"] is not None:
         P = state["project"]
-        st.subheader("Data preparation report")
-        st.dataframe(pd.DataFrame(P["log"]), use_container_width=True, hide_index=True)
-        st.caption("Blank cells are filled from the nearest valid cell. Radiometric spikes are replaced by the local median and negative concentrations set to zero.")
+        st.divider()
+        source_note()
+        st.subheader("Prepared layers")
+        st.caption("Source: " + state["source"])
         palette = {"tmi": ("RdBu_r", True), "k": ("YlOrRd", False), "eth": ("YlGn", False), "eu": ("PuBu", False), "tc": ("Viridis", False),
                    "dem": ("Earth", False), "grav": ("Spectral_r", True)}
         cols = st.columns(3)
@@ -231,6 +293,10 @@ if step == STEPS[0]:
                 c, sym = palette.get(kind, ("Viridis", False))
                 show(map_figure(P, grid - (np.median(grid) if sym else 0), gridio.LAYER_NAMES[kind], c, sym, height=380, cols=3,
                                 occurrences=state["occurrences"]))
+        with st.expander("Data preparation report"):
+            st.dataframe(pd.DataFrame(P["log"]), use_container_width=True, hide_index=True)
+            st.caption("Blank cells are filled from the nearest valid cell. Radiometric spikes are replaced by the local median and negative concentrations set to zero.")
+            st.download_button("Download prepared grids (CSV, easting/northing/values)", report.all_layers_xyz(P), "regolithsense_prepared_grids.csv", "text/csv")
 
 # -------------------------------------------------------------- 2 magnetics
 elif step == STEPS[1]:
@@ -248,6 +314,7 @@ elif step == STEPS[1]:
         state["sensor_height"] = d.number_input("Survey terrain clearance (m)", value=float(state.get("sensor_height", 80.0)), step=10.0)
         state["min_length"] = st.slider("Shortest lineament to keep (m)", 500, 5000, int(state.get("min_length", 1500)), 250)
     token, mag, rad, reg, grav = all_results(P)
+    kpi_band(P, mag, rad, reg); source_note()
     st.write("Magnetic fields pass through non-magnetic regolith, so these maps show bedrock structure beneath the cover.")
     tabs = st.tabs(["Field", "Edges and lineaments", "Depth to source"])
     with tabs[0]:
@@ -256,6 +323,7 @@ elif step == STEPS[1]:
             show(map_figure(P, mag["field"] - np.median(mag["field"]), "Magnetic field" + (" reduced to the equator" if state.get("reduce", True) else ""), "RdBu_r", True, "nT"))
         with b:
             show(map_figure(P, mag["residual"], "Residual field (regional removed)", "RdBu_r", True, "nT"))
+        st.caption("The residual removes wavelengths longer than about 2 km (upward continuation) so that local sources stand out.")
     with tabs[1]:
         a, b = st.columns(2)
         with a:
@@ -264,18 +332,19 @@ elif step == STEPS[1]:
             show(map_figure(P, mag["asig"], "Analytic signal", "Magma", False, "nT/m"))
         a, b = st.columns(2)
         with a:
-            show(map_figure(P, mag["vd"], "First vertical derivative", "RdBu_r", True, "nT/m"))
+            show(map_figure(P, mag["hg"], "Total horizontal derivative (structural edges)", "Magma", False, "nT/m"))
         with b:
-            table = mag["lineament_table"]
-            if len(table):
-                counts, edges = np.histogram(table[:, 1], bins=np.arange(0, 181, 15), weights=table[:, 0] / 1000.0)
-                fig = go.Figure(go.Bar(x=["%d-%d" % (edges[i], edges[i + 1]) for i in range(len(counts))], y=counts, marker_color="#3d6b5c"))
-                fig.update_layout(title="Lineament length by strike", xaxis_title="Strike (degrees from north)", yaxis_title="Total length (km)", height=520,
-                                  margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white")
-                show(fig)
-                st.caption("%d lineaments traced, %.0f km in total." % (len(table), table[:, 0].sum() / 1000.0))
-            else:
-                st.info("No lineaments at the current settings.")
+            show(map_figure(P, mag["vd"], "First vertical derivative", "RdBu_r", True, "nT/m"))
+        table = mag["lineament_table"]
+        if len(table):
+            counts, edges = np.histogram(table[:, 1], bins=np.arange(0, 181, 15), weights=table[:, 0] / 1000.0)
+            fig = go.Figure(go.Bar(x=["%d-%d" % (edges[i], edges[i + 1]) for i in range(len(counts))], y=counts, marker_color=GREEN))
+            fig.update_layout(title="Lineament length by strike", xaxis_title="Strike (degrees from north)", yaxis_title="Total length (km)", height=320,
+                              margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white")
+            show(fig)
+            st.caption("%d lineaments traced, %.0f km in total." % (len(table), table[:, 0].sum() / 1000.0))
+        else:
+            st.info("No lineaments at the current settings.")
         st.caption("At low magnetic latitude, structures striking north-south produce weak anomalies and are under-represented. "
                    "The analytic signal is less affected than the tilt angle.")
     with tabs[2]:
@@ -288,6 +357,9 @@ elif step == STEPS[1]:
             if d.size:
                 st.metric("Median depth below ground", "%.0f m" % np.median(d))
                 st.metric("Middle 80% of estimates", "%.0f to %.0f m" % (np.percentile(d, 10), np.percentile(d, 90)))
+                fig = go.Figure(go.Histogram(x=d[d < np.percentile(d, 99)], nbinsx=40, marker_color=GREEN))
+                fig.update_layout(title="Distribution of depth estimates", xaxis_title="Depth (m)", height=260, margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white")
+                show(fig)
             st.caption("Estimates exist only along magnetic contacts. A %.0f m grid cannot resolve sources much shallower than one cell, "
                        "so treat these as upper bounds on cover thickness, to be checked by drilling or ground geophysics." % P["dx"])
 
@@ -298,9 +370,10 @@ elif step == STEPS[2]:
     token, mag, rad, reg, grav = all_results(P)
     if rad is None:
         st.info("Potassium, thorium and uranium grids are all needed for this step."); st.stop()
+    kpi_band(P, mag, rad, reg); source_note()
     st.write("Potassium added by hydrothermal fluids shows as potassium enrichment relative to thorium, which stays largely immobile. "
              "The signal comes from the top 30 to 40 cm of the ground, so it is most reliable where the surface is in-situ rock or saprolite.")
-    tabs = st.tabs(["Ternary image", "Alteration indices", "Channels"])
+    tabs = st.tabs(["Ternary image", "Alteration indices", "Channels", "K vs eTh crossplot"])
     with tabs[0]:
         a, b = st.columns([3, 2])
         with a:
@@ -322,50 +395,77 @@ elif step == STEPS[2]:
         with b:
             show(map_figure(P, rad["eu_eth"], "eU / eTh ratio", "PuBu", False, ""))
     with tabs[2]:
-        a, b, c = st.columns(3)
-        with a:
-            show(map_figure(P, P["layers"]["k"], "Potassium", "YlOrRd", False, "%", height=420, cols=3))
-        with b:
-            show(map_figure(P, P["layers"]["eth"], "Thorium", "YlGn", False, "ppm", height=420, cols=3))
-        with c:
-            show(map_figure(P, P["layers"]["eu"], "Uranium", "PuBu", False, "ppm", height=420, cols=3))
+        chans = [("k", "Potassium", "YlOrRd", "%"), ("eth", "Thorium", "YlGn", "ppm"), ("eu", "Uranium", "PuBu", "ppm")]
+        if "tc" in P["layers"]:
+            chans.append(("tc", "Total count", "Viridis", ""))
+        cols = st.columns(len(chans))
+        for col, (k, title, cmap, unit) in zip(cols, chans):
+            with col:
+                show(map_figure(P, P["layers"][k], title, cmap, False, unit, height=420, cols=len(chans)))
+    with tabs[3]:
+        k = P["layers"]["k"].ravel(); th = P["layers"]["eth"].ravel(); kd = rad["kd"].ravel(); alt = rad["alteration"].ravel()
+        rng = np.random.default_rng(0); pick = rng.choice(k.size, size=min(15000, k.size), replace=False)
+        fig = go.Figure()
+        fig.add_trace(go.Scattergl(x=th[pick], y=k[pick], mode="markers", marker=dict(size=3, color=kd[pick], colorscale="RdYlBu_r", cmin=-2, cmax=2,
+                                   colorbar=dict(title="Kd", thickness=12)), name="cells", hoverinfo="skip"))
+        sel = pick[alt[pick]]
+        fig.add_trace(go.Scattergl(x=th[sel], y=k[sel], mode="markers", marker=dict(size=4, color="black"), name="flagged alteration"))
+        xs = np.linspace(np.nanpercentile(th, 1), np.nanpercentile(th, 99), 50)
+        slope = np.nanmean(k) / max(np.nanmean(th), 1e-9)
+        fig.add_trace(go.Scatter(x=xs, y=slope * xs, mode="lines", line=dict(color=GREEN, dash="dash"), name="regional K:eTh trend"))
+        fig.update_layout(title="Potassium against thorium (random sample of cells)", xaxis_title="eTh (ppm)", yaxis_title="K (%)", height=480,
+                          margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white", legend=dict(orientation="h", y=-0.15))
+        show(fig)
+        st.caption("Cells above the regional trend carry more potassium than their thorium content predicts: the signature of potassic alteration "
+                   "or K-feldspar-rich rock. Cells below it are leached.")
 
 # --------------------------------------------------------------- 4 regolith
 elif step == STEPS[3]:
     P = need_project()
     st.header("Regolith and gravity")
     token, mag, rad, reg, grav = all_results(P)
-    if reg is None:
-        st.info("Add an elevation grid (for example SRTM) in step 1 to classify the regolith. Without it, radiometric evidence is used at full weight everywhere.")
-    else:
-        st.write("Transported cover hides the bedrock signal and produces false surface anomalies. This first-pass classification, from elevation "
-                 "and radiometrics, marks where surface evidence can be trusted.")
-        a, b = st.columns([3, 2])
-        with a:
-            show(map_figure(P, reg["regime"], "Regolith regime", discrete=REGIME_COLOURS))
-        with b:
-            share = pd.DataFrame({"Regime": [REGIMES[i] for i in (1, 2, 3)], "Share of area (%)": [round(100 * float((reg["regime"] == i).mean()), 1) for i in (1, 2, 3)],
-                                  "Weight given to surface radiometrics": [0.6, 1.0, 0.2]})
-            st.dataframe(share, use_container_width=True, hide_index=True)
-            st.markdown("Brown: relict lateritic surfaces. Cream: erosional ground with in-situ material. Blue: depositional, transported cover.")
-            st.caption("Rule-based and uncalibrated. Check against field observation before relying on it.")
-        show(map_figure(P, P["layers"]["dem"], "Elevation", "Earth", False, "m", height=420, cols=1))
-    st.subheader("Gravity")
-    if grav is None:
-        st.info("No gravity grid in this dataset. Add a Bouguer gravity grid in step 1 to include low-density granite as evidence.")
-    else:
-        a, b = st.columns(2)
-        with a:
-            show(map_figure(P, P["layers"]["grav"] - np.median(P["layers"]["grav"]), "Bouguer gravity", "Spectral_r", True, "mGal"))
-        with b:
-            show(map_figure(P, grav["residual"], "Residual gravity (lows may mark granite)", "Spectral_r", True, "mGal"))
+    kpi_band(P, mag, rad, reg); source_note()
+    tabs = st.tabs(["Regolith regime", "Gravity"])
+    with tabs[0]:
+        if reg is None:
+            st.info("Add an elevation grid (for example SRTM) in step 1 to classify the regolith. Without it, radiometric evidence is used at full weight everywhere.")
+        else:
+            st.write("Transported cover hides the bedrock signal and produces false surface anomalies. This first-pass classification, from elevation "
+                     "and radiometrics, marks where surface evidence can be trusted.")
+            a, b = st.columns([3, 2])
+            with a:
+                show(map_figure(P, reg["regime"], "Regolith regime", discrete=REGIME_COLOURS))
+            with b:
+                share = pd.DataFrame({"Regime": [REGIMES[i] for i in (1, 2, 3)], "Share of area (%)": [round(100 * float((reg["regime"] == i).mean()), 1) for i in (1, 2, 3)],
+                                      "Weight given to surface radiometrics": [0.6, 1.0, 0.2]})
+                st.dataframe(share, use_container_width=True, hide_index=True)
+                st.markdown("Brown: relict lateritic surfaces. Cream: erosional ground with in-situ material. Blue: depositional, transported cover.")
+                st.caption("Rule-based and uncalibrated. Check against field observation before relying on it.")
+                show(map_figure(P, reg["slope"], "Slope", "Greys", False, "deg", height=320))
+            show(map_figure(P, P["layers"]["dem"], "Elevation", "Earth", False, "m", height=460, cols=1))
+    with tabs[1]:
+        if grav is None:
+            st.info("No gravity grid in this dataset. Add a Bouguer gravity grid in step 1 (ground survey, or satellite models such as WGM2012 or GGMplus) "
+                    "to include low-density granite as evidence.")
+        else:
+            st.write("Fertile pegmatite-bearing granites are less dense than their host rocks, so they appear as gravity lows.")
+            a, b = st.columns(2)
+            with a:
+                show(map_figure(P, P["layers"]["grav"] - np.median(P["layers"]["grav"]), "Bouguer gravity", "Spectral_r", True, "mGal"))
+            with b:
+                show(map_figure(P, grav["residual"], "Residual gravity (lows may mark granite)", "Spectral_r", True, "mGal", contour=0.0))
+            a, b = st.columns(2)
+            with a:
+                show(map_figure(P, grav["vd"] * 1e4, "Vertical gravity gradient (Gzz)", "PuOr_r", True, "Eotvos", contour=0.0))
+            with b:
+                show(map_figure(P, grav["hg"], "Horizontal gravity gradient (density contacts)", "Magma", False, "mGal/m"))
 
-# ---------------------------------------------- 5 and 6 share the same score
+# ---------------------------------------------- 5, 6, 7 share the same score
 else:
     P = need_project()
     token, mag, rad, reg, grav = all_results(P)
-    evidence = pipeline.evidence_layers(mag, rad, reg, grav)
-    if not evidence:
+    all_evidence = pipeline.evidence_layers(mag, rad, reg, grav)
+    if not all_evidence:
         st.header("Prospectivity"); st.info("Magnetic or radiometric data is needed to build evidence layers."); st.stop()
     occ = state["occurrences"]
     can_train = occ is not None and len(occ) >= 10
@@ -374,58 +474,94 @@ else:
         state["score"] = None; state["docx"] = None
         state["score_token"] = score_token
 
+    def default_score():
+        if state.get("score") is None:
+            state["score"] = prospectivity.knowledge_score(all_evidence)
+            state["uncertainty"] = None; state["model_info"] = None; state["score_label"] = "Prospectivity score (weighted overlay)"
+            state["evidence_used"] = list(all_evidence)
+        return state["score"]
+
+    def current_targets():
+        score = default_score()
+        keep = state.get("keep_pct", 5); spacing = state.get("spacing_m", 1500)
+        threshold = float(np.quantile(score, 1 - keep / 100.0))
+        targets = prospectivity.pick_targets(score, P, threshold, float(spacing), regime=reg["regime"] if reg else None,
+                                             depth=mag["depth"] if mag else None, uncertainty=state.get("uncertainty"))
+        return score, threshold, targets
+
+    # ................................................................ 5
     if step == STEPS[4]:
         st.header("Prospectivity")
-        modes = ["Weighted overlay (no training data needed)"] + (["Random Forest trained on known occurrences"] if can_train else [])
-        mode = st.radio("Method", modes, key="mode")
-        if not can_train:
-            st.caption("Upload ten or more known occurrences in step 1 to enable the trained model.")
-        if mode.startswith("Weighted"):
-            st.write("Each evidence layer is scaled from 0 to 1 and combined with the weights below. The result ranks ground for follow-up. It is not a probability.")
-            cols = st.columns(len(evidence))
-            weights = {}
-            for col, name in zip(cols, evidence):
-                weights[name] = col.slider(name, 0.0, 3.0, float(prospectivity.DEFAULT_WEIGHTS.get(name, 1.0)), 0.25, key="w_" + name)
-            if sum(weights.values()) == 0:
-                st.error("Give at least one layer a weight above zero."); st.stop()
-            state["score"] = prospectivity.knowledge_score(evidence, weights)
-            state["uncertainty"] = None; state["model_info"] = None; state["score_label"] = "Prospectivity score (weighted overlay)"
-        else:
-            buffer_m = st.slider("Distance around each occurrence treated as mineralised (m)", 100, 1000, 300, 50)
-            occ_key = hashlib.md5(occ[["row", "col"]].to_numpy().tobytes()).hexdigest()
-            prob, unc, info = cached_forest(token + repr(mag_settings()), evidence, occ, P["dx"], float(buffer_m), tuple(evidence), occ_key)
-            state["score"] = prob; state["uncertainty"] = unc; state["model_info"] = info; state["score_label"] = "Prospectivity (Random Forest)"
-            a, b, c = st.columns(3)
+        kpi_band(P, mag, rad, reg); source_note()
+        with st.container(border=True):
+            st.markdown("**Model settings**")
+            a, b = st.columns([2, 3])
+            modes = ["Weighted overlay (no training data needed)"] + (["Trained on known occurrences"] if can_train else [])
+            mode = a.radio("Method", modes, key="mode")
+            use = b.multiselect("Active evidence layers", list(all_evidence), default=list(all_evidence), key="evidence_pick")
+            if not can_train:
+                a.caption("Upload ten or more known occurrences in step 1 to enable the trained models.")
+            if not use:
+                st.error("Keep at least one evidence layer active."); st.stop()
+            evidence = {k: all_evidence[k] for k in use}
+            if mode.startswith("Weighted"):
+                st.caption("Each layer is scaled from 0 to 1 and combined with the weights below. The result ranks ground for follow-up. It is not a probability.")
+                cols = st.columns(len(evidence))
+                weights = {}
+                for col, name in zip(cols, evidence):
+                    weights[name] = col.slider(name, 0.0, 3.0, float(prospectivity.DEFAULT_WEIGHTS.get(name, 1.0)), 0.25, key="w_" + name)
+                if sum(weights.values()) == 0:
+                    st.error("Give at least one layer a weight above zero."); st.stop()
+                state["score"] = prospectivity.knowledge_score(evidence, weights)
+                state["uncertainty"] = None; state["model_info"] = None; state["score_label"] = "Prospectivity score (weighted overlay)"
+            else:
+                c1, c2, c3, c4 = st.columns(4)
+                model_kind = c1.selectbox("Classifier", prospectivity.MODELS, key="model_kind")
+                n_trees = c2.slider("Trees / boosting rounds", 50, 500, 200, 50, disabled=model_kind == "Logistic regression")
+                max_depth = c3.slider("Maximum tree depth", 2, 16, 8, 1, disabled=model_kind == "Logistic regression")
+                buffer_m = c4.slider("Radius treated as mineralised (m)", 100, 1000, 300, 50)
+                occ_key = hashlib.md5(occ[["row", "col"]].to_numpy().tobytes()).hexdigest()
+                prob, unc, info = cached_model(score_token, evidence, occ, P["dx"], float(buffer_m), tuple(evidence), occ_key, model_kind, int(n_trees), int(max_depth))
+                state["score"] = prob; state["uncertainty"] = unc; state["model_info"] = info; state["score_label"] = "Prospectivity (%s)" % model_kind
+            state["evidence_used"] = list(evidence)
+        score = state["score"]
+        info = state.get("model_info")
+        if info:
+            a, b, c, d = st.columns(4)
             a.metric("Known occurrences used", info["n_occurrences"])
             b.metric("Cross-validated AUC", "n/a" if info["auc"] is None else "%.2f" % info["auc"],
                      help="Area under the ROC curve, scored on spatial blocks the model did not see during training.")
-            c.metric("Blocks scored", info["blocks_scored"])
+            c.metric("Spatial blocks scored", info["blocks_scored"])
+            d.metric("Training cells", "%d + / %d -" % (info["n_positive_cells"], info["n_negative_cells"]))
             if info["auc"] is None:
                 st.warning("The occurrences are too clustered to test the model on separate areas. Treat the map as untested.")
             elif info["n_occurrences"] < 25:
                 st.warning("Fewer than 25 occurrences: the accuracy figure is unstable and likely optimistic.")
-        score = state["score"]
         a, b = st.columns([3, 2])
         with a:
             show(map_figure(P, score, state["score_label"], "Viridis", False, "", occurrences=occ, height=560))
         with b:
-            info = state.get("model_info")
             if info and info.get("importance"):
                 imp = pd.Series(info["importance"]).sort_values()
-                fig = go.Figure(go.Bar(x=imp.values, y=imp.index, orientation="h", marker_color="#3d6b5c"))
-                fig.update_layout(title="What the model relied on", height=300, margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white")
+                fig = go.Figure(go.Bar(x=imp.values, y=imp.index, orientation="h", marker_color=GREEN))
+                fig.update_layout(title="What the model relied on", height=280, margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white")
                 show(fig)
                 if info.get("fpr"):
-                    fig = go.Figure([go.Scatter(x=info["fpr"], y=info["tpr"], mode="lines", line=dict(color="#3d6b5c", width=3), name="Model"),
+                    fig = go.Figure([go.Scatter(x=info["fpr"], y=info["tpr"], mode="lines", line=dict(color=GREEN, width=3), name="Model"),
                                      go.Scatter(x=[0, 1], y=[0, 1], mode="lines", line=dict(color="#999999", dash="dash"), name="Chance")])
                     fig.update_layout(title="ROC curve (spatial cross-validation)", xaxis_title="False positive rate", yaxis_title="True positive rate",
                                       height=300, margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white")
                     show(fig)
+            else:
+                weights_now = {n: state.get("w_" + n, prospectivity.DEFAULT_WEIGHTS.get(n, 1.0)) for n in evidence}
+                fig = go.Figure(go.Bar(x=list(weights_now.values()), y=list(weights_now.keys()), orientation="h", marker_color=GREEN))
+                fig.update_layout(title="Evidence weights in use", height=280, margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white")
+                show(fig)
+                hist = go.Figure(go.Histogram(x=score.ravel(), nbinsx=50, marker_color=GREEN))
+                hist.update_layout(title="Score distribution", xaxis_title="Score", height=260, margin=dict(l=10, r=10, t=44, b=10), plot_bgcolor="white")
+                show(hist)
             if state.get("uncertainty") is not None:
                 show(map_figure(P, state["uncertainty"], "Uncertainty (spread between trees)", "Greys", False, "", height=360))
-            st.markdown("**Evidence layers in use**")
-            for name in evidence:
-                st.write("- " + name)
             if reg is not None and rad is not None:
                 st.caption("Radiometric evidence is down-weighted over relict and transported cover.")
         with st.expander("Show each evidence layer"):
@@ -434,37 +570,84 @@ else:
                 with cols[i % 3]:
                     show(map_figure(P, layer, name, "Viridis", False, "", height=360, cols=3))
 
-    else:
+    # ................................................................ 6
+    elif step == STEPS[5]:
         st.header("Targets and export")
-        if state.get("score") is None:
-            state["score"] = prospectivity.knowledge_score(evidence)
-            state["uncertainty"] = None; state["model_info"] = None; state["score_label"] = "Prospectivity score (weighted overlay)"
-        score = state["score"]
+        kpi_band(P, mag, rad, reg); source_note()
         a, b = st.columns(2)
-        keep = a.slider("Keep the top share of the area (%)", 1, 20, 5, 1)
-        spacing = b.slider("Minimum spacing between targets (m)", 500, 5000, 1500, 250)
-        threshold = float(np.quantile(score, 1 - keep / 100.0))
-        targets = prospectivity.pick_targets(score, P, threshold, float(spacing), regime=reg["regime"] if reg else None,
-                                             depth=mag["depth"] if mag else None, uncertainty=state.get("uncertainty"))
-        a, b, c = st.columns(3)
-        area = P["nx"] * P["ny"] * P["dx"] ** 2 / 1e6
-        a.metric("Survey area", "%.0f sq km" % area)
+        state["keep_pct"] = a.slider("Keep the top share of the area (%)", 1, 20, int(state.get("keep_pct", 5)), 1,
+                                     help="The decision threshold. 5% keeps only the best twentieth of the survey.")
+        state["spacing_m"] = b.slider("Minimum spacing between targets (m)", 500, 5000, int(state.get("spacing_m", 1500)), 250)
+        score, threshold, targets = current_targets()
+        a, b, c, d = st.columns(4)
+        a.metric("Score threshold", "%.2f" % threshold)
         b.metric("Search area reduced by", "%.0f%%" % prospectivity.area_reduction(score, threshold))
         c.metric("Targets", len(targets))
+        d.metric("High priority", int((targets["Priority"] == "High").sum()) if len(targets) else 0)
         show(map_figure(P, score, state["score_label"] + " with ranked targets", "Viridis", False, "", points=targets, occurrences=occ, height=600))
         st.dataframe(targets, use_container_width=True, hide_index=True)
         st.caption("Targets are the highest points of the score, ranked best first. They are places to check on the ground, not drill-ready collars, "
                    "and this is not a JORC or NI 43-101 report.")
-        st.subheader("Export")
+        st.subheader("Target package")
         notes = ["Simulated example data: the results do not describe real ground."] if state["simulated"] else []
-        a, b, c, d = st.columns(4)
-        a.download_button("Targets (CSV)", targets.to_csv(index=False).encode(), "regolithsense_targets.csv", "text/csv", use_container_width=True)
-        b.download_button("Workbook (Excel)", report.excel_workbook(P, targets, state.get("model_info")), "regolithsense_workbook.xlsx",
-                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-        c.download_button("Score grid (XYZ)", report.grid_xyz(P, score, "score"), "regolithsense_score.csv", "text/csv", use_container_width=True)
-        if d.button("Build Word report", use_container_width=True):
+        r1 = st.columns(4)
+        r1[0].download_button("Targets (CSV)", targets.to_csv(index=False).encode(), "regolithsense_targets.csv", "text/csv", use_container_width=True)
+        r1[1].download_button("Targets (GeoJSON, for QGIS)", report.targets_geojson(targets), "regolithsense_targets.geojson", "application/geo+json", use_container_width=True)
+        r1[2].download_button("Targets (KML, Google Earth)", report.targets_kml(targets), "regolithsense_targets.kml", "application/vnd.google-earth.kml+xml", use_container_width=True)
+        r1[3].download_button("Workbook (Excel)", report.excel_workbook(P, targets, state.get("model_info")), "regolithsense_workbook.xlsx",
+                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        r2 = st.columns(4)
+        r2[0].download_button("Score grid (XYZ)", report.grid_xyz(P, score, "score"), "regolithsense_score.csv", "text/csv", use_container_width=True)
+        r2[1].download_button("All grids (XYZ)", report.all_layers_xyz(P, {"score": score}), "regolithsense_grids.csv", "text/csv", use_container_width=True)
+        if r2[2].button("Build Word report", use_container_width=True, type="primary"):
             with st.spinner("Drawing maps and writing the report"):
                 state["docx"] = report.word_report(P, state["source"], mag, rad, reg, score, state["score_label"], targets, state.get("model_info"), notes)
         if state.get("docx"):
-            st.download_button("Download Word report", state["docx"], "regolithsense_report.docx",
-                               "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            r2[3].download_button("Download Word report", state["docx"], "regolithsense_report.docx",
+                                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+
+    # ................................................................ 7
+    else:
+        st.header("3D view")
+        kpi_band(P, mag, rad, reg); source_note()
+        score, threshold, targets = current_targets()
+        drapes = {"Prospectivity score": (score, "Viridis"), "Magnetic field": (mag["field"] if mag else None, "RdBu_r")}
+        if rad is not None:
+            drapes["Potassium enrichment (Kd)"] = (rad["kd"], "RdYlBu_r")
+        if reg is not None:
+            drapes["Regolith regime"] = (reg["regime"].astype(float), [[0, REGIME_COLOURS[0]], [0.5, REGIME_COLOURS[1]], [1, REGIME_COLOURS[2]]])
+        if grav is not None:
+            drapes["Bouguer gravity"] = (P["layers"]["grav"], "Spectral_r")
+        drapes = {k: v for k, v in drapes.items() if v[0] is not None}
+        a, b, c = st.columns(3)
+        drape = a.selectbox("Surface colour", list(drapes))
+        exag = b.slider("Vertical exaggeration", 1.0, 10.0, 4.0, 0.5)
+        show_targets = c.checkbox("Show targets with estimated depth", value=True)
+        stepn = max(int(np.ceil(max(P["nx"], P["ny"]) / 220.0)), 1)
+        x, y = axes_km(P, stepn)
+        dem = P["layers"]["dem"] if "dem" in P["layers"] else np.zeros((P["ny"], P["nx"]))
+        zs = dem[::stepn, ::stepn]
+        col, cmap = drapes[drape]
+        colz = np.asarray(col, float)[::stepn, ::stepn]
+        lo, hi = np.nanpercentile(colz, (2, 98))
+        fig = go.Figure(go.Surface(x=x, y=y, z=zs, surfacecolor=colz, colorscale=cmap, cmin=lo, cmax=hi, colorbar=dict(title=drape, thickness=14),
+                                   hovertemplate="E %{x:.1f} km<br>N %{y:.1f} km<br>elev %{z:.0f} m<extra></extra>"))
+        if show_targets and len(targets):
+            for _, t in targets.iterrows():
+                ex, ny_ = t["Easting (m)"] / 1000.0, t["Northing (m)"] / 1000.0
+                r = min(int((t["Northing (m)"] - P["y0"]) / P["dx"]), P["ny"] - 1); c_ = min(int((t["Easting (m)"] - P["x0"]) / P["dx"]), P["nx"] - 1)
+                top = float(dem[r, c_]); d = t.get("Depth to magnetic source (m)")
+                bottom = top - (float(d) if d is not None and not pd.isna(d) else 150.0)
+                fig.add_trace(go.Scatter3d(x=[ex, ex], y=[ny_, ny_], z=[top + 20, bottom], mode="lines+markers+text", text=[t["Target"], ""],
+                                           textposition="top center", line=dict(color="#d62728" if t["Priority"] == "High" else "#f4a261", width=5),
+                                           marker=dict(size=[4, 2], color="#d62728" if t["Priority"] == "High" else "#f4a261"), showlegend=False,
+                                           hovertemplate="%s<br>score %.2f<br>%s<extra></extra>" % (t["Target"], t["Score"], t.get("Regolith regime", ""))))
+        zr = float(np.nanmax(zs) - np.nanmin(zs)) or 1.0
+        xr = (x[-1] - x[0]) * 1000.0; yr = (y[-1] - y[0]) * 1000.0
+        fig.update_layout(height=680, margin=dict(l=0, r=0, t=10, b=0),
+                          scene=dict(xaxis_title="Easting (km)", yaxis_title="Northing (km)", zaxis_title="Elevation (m)",
+                                     aspectmode="manual", aspectratio=dict(x=1, y=yr / xr, z=exag * zr / xr), camera=dict(eye=dict(x=1.3, y=-1.4, z=0.9))))
+        show(fig)
+        st.caption("Terrain from the elevation grid, coloured by the chosen layer. Target pins reach down to the tilt-depth estimate of the nearest magnetic "
+                   "source, a rough guide to how deep the cover is at each target, not a measured thickness." if "dem" in P["layers"] else
+                   "No elevation grid in this dataset, so the surface is flat. Add SRTM in step 1 for terrain.")

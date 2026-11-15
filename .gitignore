@@ -16,3 +16,4 @@ ENV/
 data/
 *.grd
 *.gi
+!data/wamba_210_demo.npz

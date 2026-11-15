@@ -11,7 +11,10 @@ Two modes:
 import numpy as np
 import pandas as pd
 from scipy import ndimage
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score, roc_curve
 
 DEFAULT_WEIGHTS = {
@@ -57,11 +60,32 @@ def knowledge_score(evidence, weights=None):
     return ndimage.gaussian_filter(total / wsum, 1.0)
 
 
-def train_forest(evidence, occurrences, cell, buffer_m=300.0, n_trees=200, blocks=5, seed=0):
+MODELS = ["Random Forest", "Gradient Boosting", "Logistic regression"]
+
+
+def _make_model(kind, n_trees, max_depth, seed):
+    if kind == "Gradient Boosting":
+        return GradientBoostingClassifier(n_estimators=n_trees, max_depth=min(max_depth, 6), learning_rate=0.05, subsample=0.8, random_state=seed)
+    if kind == "Logistic regression":
+        return make_pipeline(StandardScaler(), LogisticRegression(class_weight="balanced", max_iter=500))
+    return RandomForestClassifier(n_estimators=n_trees, max_depth=max_depth, min_samples_leaf=3, class_weight="balanced", random_state=seed, n_jobs=-1)
+
+
+def _importance(model, names):
+    est = model[-1] if hasattr(model, "steps") else model
+    if hasattr(est, "feature_importances_"):
+        vals = est.feature_importances_
+    else:
+        vals = np.abs(est.coef_[0]); vals = vals / (vals.sum() + 1e-12)
+    return dict(zip(names, [float(v) for v in vals]))
+
+
+def train_forest(evidence, occurrences, cell, buffer_m=300.0, n_trees=200, blocks=5, seed=0, model_kind="Random Forest", max_depth=None):
     """
     Train on known occurrences (DataFrame with row, col). Returns
     (probability, uncertainty, info). info holds the cross-validated AUC, the
-    ROC curve, feature importances and sample counts.
+    ROC curve, feature importances and sample counts. `model_kind` is one of
+    MODELS; uncertainty (spread between trees) is available for the forest only.
     """
     names = list(evidence)
     shape = evidence[names[0]].shape
@@ -84,7 +108,7 @@ def train_forest(evidence, occurrences, cell, buffer_m=300.0, n_trees=200, block
         test = block == b; train = ~test
         if y[test].sum() == 0 or y[train].sum() == 0:
             continue
-        m = RandomForestClassifier(n_estimators=n_trees, min_samples_leaf=3, class_weight="balanced", random_state=seed, n_jobs=-1)
+        m = _make_model(model_kind, n_trees, max_depth, seed)
         m.fit(X[idx[train]], y[train])
         oof[test] = m.predict_proba(X[idx[test]])[:, 1]
     scored = np.isfinite(oof)
@@ -95,12 +119,16 @@ def train_forest(evidence, occurrences, cell, buffer_m=300.0, n_trees=200, block
         fpr, tpr, _ = roc_curve(y[scored], oof[scored])
         info["fpr"], info["tpr"] = fpr.tolist(), tpr.tolist()
 
-    model = RandomForestClassifier(n_estimators=n_trees, min_samples_leaf=3, class_weight="balanced", random_state=seed, n_jobs=-1)
+    model = _make_model(model_kind, n_trees, max_depth, seed)
     model.fit(X[idx], y)
-    per_tree = np.stack([t.predict_proba(X)[:, 1] for t in model.estimators_])
-    prob = ndimage.gaussian_filter(per_tree.mean(axis=0).reshape(shape), 1.0)
-    unc = per_tree.std(axis=0).reshape(shape)
-    info["importance"] = dict(zip(names, model.feature_importances_.tolist()))
+    if model_kind == "Random Forest":
+        per_tree = np.stack([t.predict_proba(X)[:, 1] for t in model.estimators_])
+        raw = per_tree.mean(axis=0); unc = per_tree.std(axis=0).reshape(shape)
+    else:
+        raw = model.predict_proba(X)[:, 1]; unc = None
+    prob = ndimage.gaussian_filter(raw.reshape(shape), 1.0)
+    info["importance"] = _importance(model, names)
+    info["model"] = model_kind
     return prob, unc, info
 
 

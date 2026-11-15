@@ -130,3 +130,39 @@ def grid_xyz(project, grid, name):
     rr, cc = np.mgrid[0:project["ny"], 0:project["nx"]]
     df = pd.DataFrame({"easting": project["x0"] + cc.ravel() * project["dx"], "northing": project["y0"] + rr.ravel() * project["dx"], name: np.round(grid.ravel(), 5)})
     return df.to_csv(index=False).encode()
+
+
+def targets_geojson(targets):
+    """Targets as a GeoJSON FeatureCollection (WGS84) for QGIS, Google Earth or a web map."""
+    import json
+    feats = []
+    for _, t in targets.iterrows():
+        props = {k: (None if (isinstance(v, float) and np.isnan(v)) else (v.item() if hasattr(v, "item") else v)) for k, v in t.items()}
+        feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [float(t["Longitude"]), float(t["Latitude"])]}, "properties": props})
+    return json.dumps({"type": "FeatureCollection", "features": feats}, indent=1).encode()
+
+
+def targets_kml(targets, name="RegolithSense targets"):
+    """Targets as KML so they open directly in Google Earth."""
+    from xml.sax.saxutils import escape
+    colour = {"High": "ff1c54b4", "Medium": "ff1a6d8a", "Low": "ff8c8c8c"}
+    rows = []
+    for _, t in targets.iterrows():
+        desc = "<br/>".join("%s: %s" % (escape(str(k)), escape(str(v))) for k, v in t.items())
+        rows.append("<Placemark><name>%s</name><description><![CDATA[%s]]></description><Style><IconStyle><color>%s</color></IconStyle></Style>"
+                    "<Point><coordinates>%.6f,%.6f,0</coordinates></Point></Placemark>" % (escape(str(t["Target"])), desc, colour.get(t.get("Priority"), "ff8c8c8c"),
+                                                                                           t["Longitude"], t["Latitude"]))
+    return ('<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>%s</name>%s</Document></kml>'
+            % (escape(name), "".join(rows))).encode()
+
+
+def all_layers_xyz(project, extra=None):
+    """Every prepared layer (and any extra grids) as one CSV of easting, northing, values."""
+    import io
+    cols = dict(project["layers"]); cols.update(extra or {})
+    step = max(int(np.ceil(max(project["nx"], project["ny"]) / 600.0)), 1)
+    rr, cc = np.mgrid[0:project["ny"]:step, 0:project["nx"]:step]
+    df = pd.DataFrame({"easting": project["x0"] + cc.ravel() * project["dx"], "northing": project["y0"] + rr.ravel() * project["dx"]})
+    for k, g in cols.items():
+        df[k] = np.asarray(g, float)[::step, ::step].ravel()
+    buf = io.StringIO(); df.to_csv(buf, index=False, float_format="%.4f"); return buf.getvalue().encode()
