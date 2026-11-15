@@ -320,6 +320,13 @@ elif step == METHODS:
 Dickson & Scott 1997, *AGSO J.* 17; Efimov 1978; Miller & Singh 1994, *J. Appl. Geophys.* 32; Pires 1995, *Rev. Bras. Geociências* 25;
 Roberts et al. 2017, *Ecography* 40; Roest, Verhoef & Pilkington 1992, *Geophysics* 57; Salem et al. 2007, *The Leading Edge* 26.
 
+**Validation so far.** No published list of pegmatite or mine coordinates exists for sheet 210 in the open literature we could find, so the trained models
+have not been tested on real occurrences and the Wamba ranking uses expert weights. One independent cross-check was made against a 2026 preprint
+(Research Square, not yet peer reviewed) that interpreted airborne magnetic and radiometric data over the same sheet and flagged two zones.
+In its north-western zone (8°48′–8°52′N, 8°32′–8°36′E) the score is above the sheet's top 5% over 29% of the area and five of the 40 targets fall inside it.
+Around its second zone (8°40′N, 8°48′E) the score is low and no target falls within 6 km. Both studies use the same NGSA grids, so this shows the methods
+agree in part, not that mineralisation is confirmed.
+
 **Data.** Nigerian Geological Survey Agency airborne magnetic and radiometric grids (2005–2009 national survey, 500 m line spacing, 80 m clearance);
 SRTM 1-arc-second elevation. Satellite gravity (WGM2012 or GGMplus) can be added as a Bouguer grid.
 """)
@@ -379,6 +386,8 @@ elif step == DATA:
         st.subheader("Known occurrences (optional)")
         st.write("A CSV of known pegmatite or mine locations with easting/northing or longitude/latitude columns. "
                  "With ten or more, the prospectivity model can be trained and tested on them.")
+        st.download_button("Download a CSV template", open(pipeline.TEMPLATE_PATH, "rb").read(), "occurrences_template.csv", "text/csv",
+                           help="Columns: name, longitude, latitude (or easting, northing). Use surveyed locations of confirmed pegmatites or mines only.")
         occ_file = st.file_uploader("Occurrence file", type=["csv"], key="occ_file")
         if occ_file is not None and state["project"] is None:
             st.info("Prepare the survey data first, then the occurrences will be placed on it.")

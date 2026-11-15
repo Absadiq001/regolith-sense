@@ -35,6 +35,14 @@ It takes data that already exists for the whole country and turns it into a targ
 The app opens with **Wamba sheet 210 (Nasarawa State)** already loaded from real NGSA grids (bundled at 200 m, 1.3 MB),
 so the whole workflow can be shown in two minutes. A clearly labelled simulated dataset (with gravity) is also included.
 
+## Validation status
+
+No published list of pegmatite or mine coordinates for Wamba sheet 210 is available in the open literature, so the trained models have not yet been
+tested on real occurrences; the Wamba ranking uses expert weights. As an independent cross-check, the north-western anomaly zone interpreted in a
+2026 preprint (Research Square, not peer reviewed) lies in our top-scoring ground (29% of its area in the top 5%, five of 40 targets inside it), while
+its second zone does not (no target within 6 km). Both use the same NGSA grids. A surveyed occurrence list (from field GPS, SMDF, NGSA or the Mining
+Cadastre) is the single most valuable next input; a CSV template is in `data/occurrences_template.csv` and in the app.
+
 ## What it is not
 
 Scores are rankings, not probabilities of a deposit. The regolith classes are rule-based and uncalibrated. Nothing here

@@ -18,6 +18,7 @@ def simulated_layers():
     return {kind: dict(base, grid=np.asarray(d[src], float)) for kind, src in names.items()}
 
 
+TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "occurrences_template.csv")
 DEMO_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "wamba_210_demo.npz")
 
 
