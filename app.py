@@ -193,9 +193,10 @@ if step == STEPS[0]:
                     state["project"] = gridio.harmonise(chosen, cell=float(cell))
                 state["source"] = ", ".join(sorted(state["uploads"]))
                 state["simulated"] = False; state["occurrences"] = None
-                st.rerun()
             except Exception as exc:
                 st.error(str(exc))
+            else:
+                st.rerun()
     with right:
         st.subheader("No data to hand?")
         st.write("Load a simulated survey to see how the workflow runs. It is computer-generated and does not describe any real ground.")
